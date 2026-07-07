@@ -1,0 +1,31 @@
+message(STATUS "DEBUG: controller CMakeLists is being parsed")
+idf_component_register(
+    SRCS
+        "src/wifiMgr.cpp"
+        "src/wsServer.cpp"
+        "src/r33Client.cpp"
+        "src/nvsMgr.cpp"
+        "src/system.cpp"
+        "src/Valves.cpp"
+        "src/WsServerMgr.cpp"
+        "src/r33Client.cpp"
+        "src/r33SlaveController.cpp"
+        "src/ClientsList.cpp"
+        "src/WsReceiver.cpp"
+        "src/ACMonitor.cpp"
+        "src/SharedDataStore.cpp"
+        "src/LedController.cpp"
+        "src/IconData.cpp"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        esp_http_server
+        esp_websocket_client
+        esp_wifi
+        esp_event
+        esp_adc
+        esp_driver_gpio
+        nvs_flash
+        mdns
+        arduinojson
+)

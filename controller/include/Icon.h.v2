@@ -1,0 +1,15 @@
+#ifndef ICON_H
+#define ICON_H
+
+static const char kAppIconSvg[] = R"SVG(<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" ry="24" fill="#0a3d62"/>
+  <rect x="24" y="30" width="80" height="18" rx="8" fill="#f5f6fa"/>
+  <rect x="24" y="60" width="80" height="18" rx="8" fill="#f5f6fa"/>
+  <rect x="44" y="90" width="40" height="18" rx="8" fill="#f5f6fa"/>
+  <circle cx="96" cy="96" r="18" fill="#60a3bc"/>
+  <path d="M92 88l12 8-12 8z" fill="#ffffff"/>
+</svg>
+)SVG";
+
+#endif // ICON_H
