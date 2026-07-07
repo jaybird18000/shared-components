@@ -171,6 +171,36 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
 
     .input-row { margin-bottom:14px; }
     .input-row label { display:block; margin-bottom:6px; color:#9bb5c9; }
+    .master-toggle {
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      font-size:14px;
+      margin:0;
+      white-space:nowrap;
+      line-height:1.2;
+      color:#eef3f6;
+    }
+    .master-toggle input[type="checkbox"] {
+      appearance:none;
+      -webkit-appearance:none;
+      width:16px;
+      height:16px;
+      min-width:16px;
+      border:2px solid #9bc5d6;
+      border-radius:4px;
+      background:transparent;
+      cursor:pointer;
+      margin:0;
+      display:inline-block;
+      vertical-align:middle;
+      flex-shrink:0;
+    }
+    .master-toggle input[type="checkbox"]:checked {
+      background:#1976d2 url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="white" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 11.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>') no-repeat center center;
+      border-color:#1976d2;
+      background-size:12px 12px;
+    }
     .input-row input {
       width:100%;
       font-size:1.1rem;
@@ -270,6 +300,13 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
       <div class="page-container config-container">
 
         <div class="card">
+          <div class="input-row">
+            <label for="isMaster" class="master-toggle">
+              <span>Master Device</span>
+              <input id="isMaster" type="checkbox" />
+            </label>
+          </div>
+
           <div class="input-row">
             <label for="ssid">WiFi SSID</label>
             <input id="ssid" type="text" placeholder="Network name" />
@@ -432,9 +469,11 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
       }
     }
 
-    function setSTAwifi(ssid_text, pw_text) {
+    function setSTAwifi(ssid_text, pw_text, isMaster) {
       if (ssid_text) document.getElementById('ssid').value = ssid_text;
       if (pw_text) document.getElementById('password').value = pw_text;
+      const masterBox = document.getElementById('isMaster');
+      if (masterBox) masterBox.checked = !!isMaster;
     }
 
     function setAPwifi(ssid_text, pw_text, ipAddress, gateway, netmask) {
@@ -731,7 +770,7 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
       if (payload.type === 'ap_config_saved') appendLog('AP WiFi settings saved');
 
       if (payload.type === 'STA_wifi_config')
-        setSTAwifi(payload.ssid, payload.password);
+        setSTAwifi(payload.ssid, payload.password, payload.isMaster);
 
       if (payload.type === 'AP_wifi_config')
         setAPwifi(payload.ssid, payload.password, payload.ipAddress,
@@ -810,7 +849,8 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
     function saveSTAWifiConfig() {
       const ssid = document.getElementById('ssid').value;
       const password = document.getElementById('password').value;
-      sendMessage({command:'save_STA_wifi', ssid, password});
+      const isMaster = document.getElementById('isMaster').checked;
+      sendMessage({command:'save_STA_wifi', ssid, password, isMaster});
     }
 
     function isValidIPv4(ip) {

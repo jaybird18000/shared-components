@@ -47,6 +47,20 @@ static std::string extractJsonField(const std::string& payload, const char* fiel
     if (end == std::string::npos) return {};
     return payload.substr(start + 1, end - start - 1);
 }
+static bool extractJsonBool(const std::string& payload, const char* field)
+{
+    std::string needle = std::string("\"") + field + "\"";
+    size_t pos = payload.find(needle);
+    if (pos == std::string::npos) return false;
+    size_t colon = payload.find(':', pos);
+    if (colon == std::string::npos) return false;
+    size_t start = payload.find_first_not_of(" \t", colon + 1);
+    if (start == std::string::npos) return false;
+    std::string value = payload.substr(start, 4);
+    if (value == "true") return true;
+    if (value == "false") return false;
+    return false;
+}
 static int extractJsonInt(const std::string& payload, const char* field)
 {
     std::string needle = std::string("\"") + field + "\"";
@@ -309,8 +323,9 @@ void WsServerMgr::handleWebClientMsg(int sockfd, const std::string &message)
         if (message.find("save_STA_wifi") != std::string::npos) {
             std::string ssid = extractJsonField(message, "ssid");
             std::string password = extractJsonField(message, "password");
+            bool isMaster = extractJsonBool(message, "isMaster");
             if (!ssid.empty()) {
-                NvsMgr::instance().saveSTA_Config(ssid, password);
+                NvsMgr::instance().saveSTA_Config(ssid, password, isMaster);
                 WsServer::instance().postDebug("STAWiFi configuration saved");
 
                 WsServer::instance().sendTextMsg(sockfd, "{\"type\":\"sta_config_saved\"}");
@@ -352,7 +367,7 @@ void WsServerMgr::handleWebClientMsg(int sockfd, const std::string &message)
             WifiConfig config = NvsMgr::instance().currentSTA_Config();
             if (!config.ssid.empty()) {
 
-                WsServer::instance().sendTextMsg(sockfd, "{\"type\":\"STA_wifi_config\",\"ssid\":\"" + config.ssid + "\",\"password\":\"" + config.password + "\"}");
+                WsServer::instance().sendTextMsg(sockfd, "{\"type\":\"STA_wifi_config\",\"ssid\":\"" + config.ssid + "\",\"password\":\"" + config.password + "\",\"isMaster\":" + (config.isMaster ? "true" : "false") + "}");
                 ESP_LOGI("handleWebClientMsg", "sent staConfig to client") ;
             }
             else
@@ -429,13 +444,17 @@ void WsServerMgr::handleSlaveClientMsg(int sockfd, const std::string& message)
 
 void WsServerMgr::broadcastStatus()
 {
-
-    valves.update();
+    // master has the valves 
+    if (WifiMgr::instance().isMaster())
+    {
+        valves.update();
+    }
 
     // Read current values
     // float voltage = acMonitor.readVoltage();
     // float current = acMonitor.readCurrent();
     // std::string genState = genRelay.stateText();
+    // slave sent the ac info via a message and the SharedDataStore is updated with the latest values
     SharedAcData_t ac = SharedDataStore::get();
     float voltage = ac.voltage;
     float current = ac.current;

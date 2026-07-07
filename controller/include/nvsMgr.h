@@ -11,7 +11,7 @@ public:
     static NvsMgr& instance();
     void initialize();
 
-    void saveSTA_Config(const std::string& ssid, const std::string& password);
+    void saveSTA_Config(const std::string& ssid, const std::string& password, bool isMaster = false);
     void saveAP_Config(const std::string &ssid, 
                                 const std::string &password,
                                 const std::string &ipAddress,

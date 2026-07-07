@@ -23,6 +23,7 @@ struct WifiConfig {
     std::string ipAddress = "";
     std::string gateway = "";
     std::string netmask = "";
+    bool isMaster = false;
 };
 
 class WifiMgr {

@@ -42,25 +42,8 @@ WifiMgr::WifiMgr()
 
 
 
-    // determine whether we are the master or slave by reading mac address
-    uint8_t mac[6];
-    uint8_t slaveMac[6] = {0x3C, 0xDC, 0x75, 0x71, 0x52, 0x3C}; // Mac for slave device
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-
-    ESP_LOGI("MAC", "STA MAC = %02X:%02X:%02X:%02X:%02X:%02X",
-    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    isMaster_ = false;
-    for (int i = 0; i < 6; i++) {
-        if (mac[i] != slaveMac[i]) {
-            ESP_LOGI("MAC", "This is the MASTER device");
-            isMaster_ = true;
-            break;
-        }
-        if (i == 5) {
-            ESP_LOGI("MAC", "This is the SLAVE device");
-
-        }
-    }
+    isMaster_ = STA_config_.isMaster;
+    ESP_LOGI(TAG, "Configured role: %s", isMaster_ ? "MASTER" : "SLAVE");
 
 }
 

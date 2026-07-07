@@ -12,6 +12,7 @@ static const char* NVS_NAMESPACE = "wifi_cfg";
 //static const char* NVS_NAMESPACE = "temp";
 static const char* NVS_STA_SSID_KEY = "STA_ssid";
 static const char* NVS_STA_PASSWORD_KEY = "STA_password";
+static const char* NVS_STA_IS_MASTER_KEY = "STA_isMaster";
 static const char* NVS_AP_SSID_KEY = "AP_ssid";
 static const char* NVS_AP_PASSWORD_KEY = "AP_password";
 static const char* NVS_AP_IP_ADDRESS_KEY = "AP_ipAddress";
@@ -108,7 +109,7 @@ void NvsMgr::saveAll_Config(const std::string &sta_ssid, const std::string &sta_
     saveAP_Config(ap_ssid, ap_password, ap_ipAddress, ap_gateway, ap_netmask);
 }
 
-void NvsMgr::saveSTA_Config(const std::string& ssid, const std::string& password)
+void NvsMgr::saveSTA_Config(const std::string& ssid, const std::string& password, bool isMaster)
 {
 
     nvs_handle_t handle;
@@ -118,11 +119,13 @@ void NvsMgr::saveSTA_Config(const std::string& ssid, const std::string& password
 
     nvs_set_str(handle, NVS_STA_SSID_KEY, ssid.c_str());
     nvs_set_str(handle, NVS_STA_PASSWORD_KEY, password.c_str());
+    nvs_set_u8(handle, NVS_STA_IS_MASTER_KEY, isMaster ? 1 : 0);
     nvs_commit(handle);
     nvs_close(handle);
 
     STA_config_.ssid = ssid;
     STA_config_.password = password;
+    STA_config_.isMaster = isMaster;
 
 }
 
@@ -182,6 +185,15 @@ void NvsMgr::loadSTA_config()
     else
     {
         STA_config_.password = DEFAULT_STA_PASSWORD;
+    }
+
+    uint8_t isMaster = 0;
+    if (nvs_get_u8(handle, NVS_STA_IS_MASTER_KEY, &isMaster) != ESP_OK) {
+        STA_config_.isMaster = false;
+    }
+    else
+    {
+        STA_config_.isMaster = (isMaster != 0);
     }
     nvs_close(handle);
 }
