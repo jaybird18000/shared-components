@@ -16,6 +16,8 @@ idf_component_register(
         "src/SharedDataStore.cpp"
         "src/LedController.cpp"
         "src/IconData.cpp"
+        "src/OtaManager.cpp"
+        "src/version.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES
@@ -28,4 +30,6 @@ idf_component_register(
         nvs_flash
         mdns
         arduinojson
+        app_update
+        esp_http_client
 )

@@ -20,7 +20,7 @@ static const char kSlavePageHtml[] PROGMEM = R"HTML(
     :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#0c1b2a; color:#e9f1f7; }
     body { margin:0; min-height:100vh; display:flex; flex-direction:column; }
     main { flex:1; display:flex; flex-direction:column; min-height:0; }
-    header { background:#132a45; padding:18px; text-align:center; box-shadow:0 2px 12px rgba(0,0,0,0.4); }
+    header { position:relative; background:#132a45; padding:18px; text-align:center; box-shadow:0 2px 12px rgba(0,0,0,0.4); }
     header h1 { margin:0; font-size:1.2rem; }
     header p { margin:6px 0 0; color:#9bc5d6; font-size:0.94rem; }
 
@@ -80,6 +80,13 @@ static const char kSlavePageHtml[] PROGMEM = R"HTML(
       from { transform: rotate(0deg); }
       to   { transform: rotate(360deg); }
     }
+    @keyframes buttonBlink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .blink-feedback {
+      animation: buttonBlink 0.6s ease-in-out;
+    }
 
     .status-row {
       display:flex;
@@ -108,6 +115,27 @@ static const char kSlavePageHtml[] PROGMEM = R"HTML(
       flex-direction:column;
       gap:0.5rem;
       margin-top:0.35rem;
+    }
+
+    .header-reload {
+      position:absolute;
+      top:10px;
+      right:14px;
+      width:38px;
+      height:38px;
+      border-radius:50%;
+      border:1px solid rgba(255,255,255,0.2);
+      background:rgba(255,255,255,0.08);
+      color:#e9f1f7;
+      font-size:1.15rem;
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .header-reload:active {
+      transform:scale(0.96);
     }
 
     .socket-status {
@@ -241,11 +269,136 @@ static const char kSlavePageHtml[] PROGMEM = R"HTML(
       cursor:pointer;
       white-space:nowrap;
     }
+
+    .config-tabs {
+      display:flex;
+      gap:8px;
+      margin-bottom:16px;
+      border-bottom:2px solid rgba(255,255,255,0.1);
+    }
+    .config-tab-btn {
+      flex:1;
+      padding:12px 16px;
+      background:none;
+      border:none;
+      color:#9bb5c9;
+      cursor:pointer;
+      font-size:1rem;
+      border-bottom:3px solid transparent;
+      transition:all 0.3s ease;
+    }
+    .config-tab-btn.active {
+      color:#ffffff;
+      border-bottom-color:#1976d2;
+      font-weight:600;
+    }
+
+    .config-tab-content {
+      display:none;
+    }
+    .config-tab-content.active {
+      display:block;
+    }
+
+    .progress-bar {
+      width:100%;
+      height:8px;
+      background:rgba(255,255,255,0.1);
+      border-radius:4px;
+      overflow:hidden;
+      margin-top:8px;
+    }
+    .progress-bar-fill {
+      height:100%;
+      background:#1976d2;
+      width:0%;
+      transition:width 0.3s ease;
+    }
+
+    .update-status {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 10;
+      min-width: 300px;
+      max-width: 90vw;
+      padding: 10px 12px;
+      background: #0f2233;
+      border: 1px solid #1976d2;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      color: #9bc5d6;
+      text-align: center;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+    }
+    
+    .confirmation-dialog {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: #000000;
+      display: none;
+      z-index: 999;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .confirmation-content {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 1000;
+      min-width: 300px;
+      max-width: 90vw;
+      padding: 20px;
+      background: #132a45;
+      border: 1px solid #1976d2;
+      border-radius: 12px;
+      text-align: center;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+    
+    .confirmation-content p {
+      margin: 0 0 16px 0;
+      color: #e9f1f7;
+      font-size: 1rem;
+    }
+    
+    .confirmation-buttons {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+    }
+    
+    .confirmation-buttons .button {
+      flex: 1;
+      margin: 0;
+      padding: 12px 16px;
+    }
   </style>
 </head>
 
 <body>
+  <!-- Update Status Popup (fixed to viewport) -->
+  <div id="updateStatus" class="update-status" style="display:none;"></div>
+  
+  <!-- Firmware Update Confirmation Dialog -->
+  <div id="confirmationDialog" class="confirmation-dialog" style="display:none;">
+    <div class="confirmation-content">
+      <p>Start firmware update? Device will reboot after update.</p>
+      <div class="confirmation-buttons">
+        <button class="button secondary" onclick="cancelFirmwareUpdate()">Cancel</button>
+        <button class="button" onclick="confirmFirmwareUpdate()">Update</button>
+      </div>
+    </div>
+  </div>
+
   <header>
+    <button class="header-reload" type="button" title="Reload page" aria-label="Reload page" onclick="reloadPage()">&#x21bb;</button>
     <h1>R33 Boat Controller (Slave)</h1>
     <div class="header-statuses">
       <p id="socketStatus" class="socket-status disconnected">Browser: disconnected</p>
@@ -310,47 +463,87 @@ static const char kSlavePageHtml[] PROGMEM = R"HTML(
     <section id="configPage" class="page">
       <div class="page-container config-container">
 
-        <div class="card">
-          <div class="input-row">
-            <label for="isMaster" class="master-toggle">
-              <span>Master Device</span>
-              <input id="isMaster" type="checkbox" />
-            </label>
-          </div>
+        <div class="config-tabs">
+          <button class="config-tab-btn active" onclick="switchConfigTab('config')">Configuration</button>
+          <button class="config-tab-btn" onclick="switchConfigTab('updates')">Updates</button>
+        </div>
 
-          <div class="input-row">
-            <label for="ssid">WiFi SSID</label>
-            <input id="ssid" type="text" placeholder="Network name" />
-          </div>
-
-          <div class="input-row">
-            <label for="password">WiFi Password</label>
-            <div class="input-flex">
-              <input id="password" type="password" placeholder="Network password" />
-              <button class="eye-btn" onclick="togglePassword('password', this)">👁</button>
-              <button class="save-inline" onclick="saveSTAWifiConfig()">Save</button>
+        <!-- CONFIGURATION TAB -->
+        <div id="configTab" class="config-tab-content active">
+          <div class="card">
+            <div class="input-row">
+              <label for="isMaster" class="master-toggle">
+                <span>Master Device</span>
+                <input id="isMaster" type="checkbox" />
+              </label>
             </div>
+
+            <div class="input-row">
+              <label for="ssid">WiFi SSID</label>
+              <input id="ssid" type="text" placeholder="Network name" />
+            </div>
+
+            <div class="input-row">
+              <label for="password">WiFi Password</label>
+              <div class="input-flex">
+                <input id="password" type="password" placeholder="Network password" />
+                <button class="eye-btn" onclick="togglePassword('password', this)">👁</button>
+                <button class="save-inline" onclick="saveSTAWifiConfig()">Save</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="input-row">
+              <label for="ap_ssid">AP WiFi SSID</label>
+              <input id="ap_ssid" type="text" placeholder="Network name" />
+            </div>
+
+            <div class="input-row">
+              <label for="ap_password">AP WiFi Password</label>
+              <div class="input-flex">
+                <input id="ap_password" type="password" placeholder="Network password" />
+                <button class="eye-btn" onclick="togglePassword('ap_password', this)">👁</button>
+                <button class="save-inline" onclick="saveAPWifiConfig()">Save</button>
+              </div>
+            </div>
+
+            <div class="input-row"><label for="ap_ipAddress">AP WiFi ADDRESS</label><input id="ap_ipAddress" type="text" placeholder="x.x.x.x" /></div>
+            <div class="input-row"><label for="ap_gateway">AP WiFi GATEWAY</label><input id="ap_gateway" type="text" placeholder="x.x.x.x" /></div>
+            <div class="input-row"><label for="ap_netmask">AP WiFi NETMASK</label><input id="ap_netmask" type="text" placeholder="x.x.x.x" /></div>
           </div>
         </div>
 
-        <div class="card">
-          <div class="input-row">
-            <label for="ap_ssid">AP WiFi SSID</label>
-            <input id="ap_ssid" type="text" placeholder="Network name" />
-          </div>
+        <!-- UPDATES TAB -->
+        <div id="updatesTab" class="config-tab-content">
+          <div class="card">
+            <div class="status-row">
+              <span class="status-label">Current Version</span>
+              <span id="currentVersion" class="status-value">--</span>
+            </div>
+            <div class="status-row">
+              <span class="status-label">Available Version</span>
+              <span id="availableVersion" class="status-value">--</span>
+            </div>
 
-          <div class="input-row">
-            <label for="ap_password">AP WiFi Password</label>
-            <div class="input-flex">
-              <input id="ap_password" type="password" placeholder="Network password" />
-              <button class="eye-btn" onclick="togglePassword('ap_password', this)">👁</button>
-              <button class="save-inline" onclick="saveAPWifiConfig()">Save</button>
+            <div class="input-row">
+              <label for="updateServerUrl">Update Server URL</label>
+              <input id="updateServerUrl" type="text" placeholder="http://192.168.1.100:8000" autocomplete="off" spellcheck="false" />
+            </div>
+
+            <button class="button secondary" onclick="checkForUpdates()">Check for Updates</button>
+            <button class="button" id="updateBtn" onclick="startFirmwareUpdate()" style="display:none;">Update Now</button>
+
+            <div id="updateProgress" style="display:none; margin-top:16px;">
+              <div class="status-row">
+                <span class="status-label">Downloading</span>
+                <span id="updatePercentage" class="status-value">0%</span>
+              </div>
+              <div class="progress-bar">
+                <div id="progressFill" class="progress-bar-fill"></div>
+              </div>
             </div>
           </div>
-
-          <div class="input-row"><label for="ap_ipAddress">AP WiFi ADDRESS</label><input id="ap_ipAddress" type="text" placeholder="x.x.x.x" /></div>
-          <div class="input-row"><label for="ap_gateway">AP WiFi GATEWAY</label><input id="ap_gateway" type="text" placeholder="x.x.x.x" /></div>
-          <div class="input-row"><label for="ap_netmask">AP WiFi NETMASK</label><input id="ap_netmask" type="text" placeholder="x.x.x.x" /></div>
         </div>
 
       </div>
@@ -474,6 +667,13 @@ static const char kSlavePageHtml[] PROGMEM = R"HTML(
       const field = document.getElementById(id);
       field.type = field.type === "password" ? "text" : "password";
       btn.textContent = field.type === "password" ? "👁" : "🙈";
+    }
+
+    function reloadPage() {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.close();
+      }
+      window.location.reload();
     }
 
     function showPage(id) {
@@ -656,6 +856,11 @@ static const char kSlavePageHtml[] PROGMEM = R"HTML(
 
     window.addEventListener('load', () => {
       if (!socket) connectSocket();
+      // Request stored OTA server URL and current version
+      setTimeout(() => {
+        sendMessage({ command: 'get_ota_url' });
+        sendMessage({ command: 'get_current_version' });
+      }, 500);
     });
 
     window.onload = () => {
@@ -748,6 +953,52 @@ static const char kSlavePageHtml[] PROGMEM = R"HTML(
       if (payload.type === 'AP_wifi_config')
         setAPwifi(payload.ssid, payload.password,
                   payload.ipAddress, payload.gateway, payload.netmask);
+
+      if (payload.type === 'version_info') {
+        document.getElementById('currentVersion').textContent = payload.current_version || '--';
+        document.getElementById('availableVersion').textContent = payload.available_version || '--';
+        // Show update button if available_version exists and is different
+        if (payload.available_version && payload.available_version > payload.current_version) {
+          document.getElementById('updateBtn').style.display = 'block';
+          appendLog(`New firmware available: ${payload.available_version}`);
+        } else {
+          document.getElementById('updateBtn').style.display = 'none';
+          appendLog('Firmware is up to date: ' + (payload.available_version || payload.current_version));
+        }
+      }
+
+      if (payload.type === 'ota_url_loaded') {
+        document.getElementById('updateServerUrl').value = payload.url || '';
+        appendLog('Update server URL loaded');
+      }
+
+      if (payload.type === 'current_version_info') {
+        document.getElementById('currentVersion').textContent = payload.version || '--';
+        appendLog('Current firmware version: ' + (payload.version || '--'));
+      }
+
+      if (payload.type === 'update_progress') {
+        const percentage = Math.min(100, Math.max(0, payload.progress || 0));
+        document.getElementById('progressFill').style.width = percentage + '%';
+        document.getElementById('updatePercentage').textContent = percentage + '%';
+        // Progress debug logging is handled by C++ backend (every 20%)
+        // appendLog(`Update progress: ${percentage}%`);
+      }
+
+      if (payload.type === 'update_status') {
+        const statusDiv = document.getElementById('updateStatus');
+        statusDiv.textContent = payload.message || 'Update status unknown';
+        statusDiv.style.display = 'block';
+        if (payload.status === 'success') {
+          appendLog('✓ Firmware update successful!');
+          document.getElementById('updateBtn').disabled = false;
+          document.getElementById('updateProgress').style.display = 'none';
+        } else if (payload.status === 'error') {
+          appendLog('✗ Firmware update failed: ' + (payload.message || 'Unknown error'));
+          document.getElementById('updateBtn').disabled = false;
+          document.getElementById('updateProgress').style.display = 'none';
+        }
+      }
     }
 
     /* ---------------------------------------------------------
@@ -846,6 +1097,10 @@ static const char kSlavePageHtml[] PROGMEM = R"HTML(
       const password = document.getElementById('password').value;
       const isMaster = document.getElementById('isMaster').checked;
       sendMessage({command:'save_STA_wifi', ssid, password, isMaster});
+      // Add blink feedback to button
+      const button = event.target;
+      button.classList.add('blink-feedback');
+      setTimeout(() => button.classList.remove('blink-feedback'), 600);
     }
 
     function saveAPWifiConfig() {
@@ -859,6 +1114,11 @@ static const char kSlavePageHtml[] PROGMEM = R"HTML(
       if (gw && !isValidIPv4(gw)) { appendLog('Invalid gateway'); return; }
       if (mask && !isValidIPv4(mask)) { appendLog('Invalid netmask'); return; }
 
+      // Add blink feedback to button
+      const button = event.target;
+      button.classList.add('blink-feedback');
+      setTimeout(() => button.classList.remove('blink-feedback'), 600);
+
       sendMessage({
         command:'save_AP_wifi',
         ssid, password,
@@ -866,6 +1126,76 @@ static const char kSlavePageHtml[] PROGMEM = R"HTML(
         gateway: gw,
         netmask: mask
       });
+    }
+
+    /* ---------------------------------------------------------
+       CONFIG PAGE TABS
+    --------------------------------------------------------- */
+    function switchConfigTab(tab) {
+      const configTab = document.getElementById('configTab');
+      const updatesTab = document.getElementById('updatesTab');
+      const tabBtns = document.querySelectorAll('.config-tab-btn');
+
+      if (tab === 'config') {
+        configTab.classList.add('active');
+        updatesTab.classList.remove('active');
+        tabBtns[0].classList.add('active');
+        tabBtns[1].classList.remove('active');
+      } else {
+        configTab.classList.remove('active');
+        updatesTab.classList.add('active');
+        tabBtns[0].classList.remove('active');
+        tabBtns[1].classList.add('active');
+      }
+    }
+
+    /* ---------------------------------------------------------
+       OTA UPDATE FUNCTIONS
+    --------------------------------------------------------- */
+    function checkForUpdates() {
+      const updateServerUrl = document.getElementById('updateServerUrl').value;
+      if (!updateServerUrl) {
+        appendLog('Please enter update server URL');
+        return;
+      }
+      // Save the URL first
+      sendMessage({
+        command: 'save_ota_url',
+        url: updateServerUrl
+      });
+      // Then check for updates
+      sendMessage({
+        command: 'check_updates',
+        update_server_url: updateServerUrl
+      });
+      appendLog('Checking for updates...');
+    }
+
+    function startFirmwareUpdate() {
+      const updateServerUrl = document.getElementById('updateServerUrl').value;
+      if (!updateServerUrl) {
+        appendLog('Please enter update server URL');
+        return;
+      }
+      // Show custom confirmation dialog instead of browser confirm()
+      document.getElementById('confirmationDialog').style.display = 'flex';
+    }
+    
+    function confirmFirmwareUpdate() {
+      const updateServerUrl = document.getElementById('updateServerUrl').value;
+      sendMessage({
+        command: 'start_update',
+        update_server_url: updateServerUrl
+      });
+      document.getElementById('updateProgress').style.display = 'block';
+      document.getElementById('updateBtn').disabled = true;
+      document.getElementById('confirmationDialog').style.display = 'none';
+      appendLog('Starting firmware update...');
+    }
+    
+    function cancelFirmwareUpdate() {
+      document.getElementById('confirmationDialog').style.display = 'none';
+      appendLog('Firmware update cancelled');
     }
 
   </script>

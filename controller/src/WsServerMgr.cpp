@@ -8,8 +8,12 @@
 #include "AcUpdateTask.h"
 #include "Valves.h"
 #include "LedController.h"
+#include "OtaManager.h"
+#include "version.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "String.h"
 #include "cstring"
 #include "cmath"
@@ -18,8 +22,70 @@ static const char* TAG = "WsServerMgr";
 
 static ValvesController valves;
 static GenRelay genRelay;
+static OtaManager otaManager;
 
-// Analog gating state (2% change threshold)
+// OTA task handle
+static TaskHandle_t otaTaskHandle = NULL;
+
+// Structure to pass OTA parameters to task
+struct OtaTaskParams {
+    std::string updateServerUrl;
+    int operation;  // 0 = check_updates, 1 = start_update
+};
+
+// Task function for OTA operations (runs on separate stack)
+static void otaTaskFunction(void* pvParameters) {
+    OtaTaskParams* params = (OtaTaskParams*)pvParameters;
+    
+    ESP_LOGI(TAG, "OTA task started: operation=%d, url=%s", params->operation, params->updateServerUrl.c_str());
+    
+    if (params->operation == 0) {
+        // Check for updates
+        std::string currentVersion = getFirmwareVersion();
+        otaManager.setStatusCallback([currentVersion](const std::string& version, bool success) {
+            if (success) {
+                std::string json = "{\"type\":\"version_info\",\"current_version\":\"" + currentVersion + "\",\"available_version\":\"" + version + "\"}";
+                WsServer::instance().broadcastText(json, WsServer::AudienceType::BROWSERS);
+                WsServer::instance().postDebug("Available version: " + version);
+            } else {
+                WsServer::instance().postDebug("Update check failed");
+            }
+        });
+        
+        otaManager.init(currentVersion);
+        otaManager.checkForUpdates(params->updateServerUrl);
+    } 
+    else if (params->operation == 1) {
+        // Start update - track progress to avoid debug spam
+        int lastPostedProgress = 0;
+        otaManager.setProgressCallback([&lastPostedProgress](int progress) {
+            std::string json = "{\"type\":\"update_progress\",\"progress\":" + std::to_string(progress) + "}";
+            WsServer::instance().broadcastText(json, WsServer::AudienceType::BROWSERS);
+            
+            // Only post debug for every 20% increase or at 100%
+            if (progress >= lastPostedProgress + 20 || progress == 100) {
+                lastPostedProgress = progress;
+                WsServer::instance().postDebug("Update progress: " + std::to_string(progress) + "%");
+            }
+        });
+        
+        otaManager.setStatusCallback([](const std::string& message, bool success) {
+            std::string json = "{\"type\":\"update_status\",\"status\":\"" + std::string(success ? "success" : "error") + "\",\"message\":\"" + message + "\"}";
+            WsServer::instance().broadcastText(json, WsServer::AudienceType::BROWSERS);
+            if (success) {
+                WsServer::instance().postDebug("✓ " + message);
+            } else {
+                WsServer::instance().postDebug("✗ " + message);
+            }
+        });
+        
+        otaManager.init(getFirmwareVersion());
+        otaManager.startUpdate(params->updateServerUrl);
+    }
+    
+    delete params;
+    vTaskDelete(NULL);
+}
 static float s_lastVoltage = NAN;
 static float s_lastCurrent = NAN;
 static bool  s_haveLastAnalog = false;
@@ -396,6 +462,55 @@ void WsServerMgr::handleWebClientMsg(int sockfd, const std::string &message)
             int webClientLastReceivedDebugMsgCtr = extractJsonInt(message, "lastDebugId");
             ESP_LOGI("handleWebClientMsg", "rcvd subscribe debug msg counter = %d", webClientLastReceivedDebugMsgCtr);
             WsServer::instance().sendDebugMsgsSince(webClientLastReceivedDebugMsgCtr, sockfd);
+            return;
+        }
+        if (message.find("save_ota_url") != std::string::npos) {
+            std::string updateServerUrl = extractJsonField(message, "url");
+            if (!updateServerUrl.empty()) {
+                NvsMgr::instance().saveUpdateServerUrl(updateServerUrl);
+                WsServer::instance().postDebug("Update server URL saved");
+                WsServer::instance().sendTextMsg(sockfd, "{\"type\":\"ota_url_saved\"}");
+            }
+            return;
+        }
+        if (message.find("get_ota_url") != std::string::npos) {
+            std::string savedUrl = NvsMgr::instance().getUpdateServerUrl();
+            std::string json = "{\"type\":\"ota_url_loaded\",\"url\":\"" + savedUrl + "\"}";
+            WsServer::instance().sendTextMsg(sockfd, json);
+            return;
+        }
+        if (message.find("get_current_version") != std::string::npos) {
+            std::string currentVersion = getFirmwareVersion();
+            std::string json = "{\"type\":\"current_version_info\",\"version\":\"" + currentVersion + "\"}";
+            WsServer::instance().sendTextMsg(sockfd, json);
+            return;
+        }
+        if (message.find("check_updates") != std::string::npos) {
+            std::string updateServerUrl = extractJsonField(message, "update_server_url");
+            if (!updateServerUrl.empty()) {
+                WsServer::instance().postDebug("Checking for firmware updates...");
+                
+                // Create OTA task with its own stack
+                OtaTaskParams* params = new OtaTaskParams();
+                params->updateServerUrl = updateServerUrl;
+                params->operation = 0;  // check_updates
+                
+                xTaskCreate(otaTaskFunction, "OtaTask", 4096, params, 5, &otaTaskHandle);
+            }
+            return;
+        }
+        if (message.find("start_update") != std::string::npos) {
+            std::string updateServerUrl = extractJsonField(message, "update_server_url");
+            if (!updateServerUrl.empty()) {
+                WsServer::instance().postDebug("Starting firmware update...");
+                
+                // Create OTA task with its own stack
+                OtaTaskParams* params = new OtaTaskParams();
+                params->updateServerUrl = updateServerUrl;
+                params->operation = 1;  // start_update
+                
+                xTaskCreate(otaTaskFunction, "OtaUpdateTask", 4096, params, 5, &otaTaskHandle);
+            }
             return;
         }
 }

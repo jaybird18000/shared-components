@@ -26,11 +26,20 @@ public:
     void loadAll_config();
     void dumpNVS();
     WifiConfig currentSTA_Config() const;
-    WifiConfig currentAP_Config() const;    
+    WifiConfig currentAP_Config() const;
+
+    void saveUpdateServerUrl(const std::string& url);
+    std::string getUpdateServerUrl() const;
+    
+    void saveFirmwareVersion(const std::string& version);
+    std::string getFirmwareVersion() const;
+    
 private:
 
     WifiConfig STA_config_;
     WifiConfig AP_config_;
+    std::string updateServerUrl_;
+    std::string firmwareVersion_;
 
 
 };
