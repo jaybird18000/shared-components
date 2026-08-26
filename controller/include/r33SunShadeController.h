@@ -9,16 +9,16 @@
 
 #include "r33Client.h"   // your WebSocket client wrapper
 
-class R33SlaveController {
+class R33SunShadeController {
 public:
-    static R33SlaveController& instance();
+    static R33SunShadeController& instance();
 
     void begin();
 
 private:
-    R33SlaveController() = default;
-    R33SlaveController(const R33SlaveController&) = delete;
-    R33SlaveController& operator=(const R33SlaveController&) = delete;
+    R33SunShadeController() = default;
+    R33SunShadeController(const R33SunShadeController&) = delete;
+    R33SunShadeController& operator=(const R33SunShadeController&) = delete;
 
     static void messageTaskEntry(void* param);
     static void measurementTaskEntry(void* param);
@@ -28,13 +28,14 @@ private:
 
     void handleWebClientMsg(int sockfd, const std::string &message);
 
-    void startGenerator();
-    void stopGenerator();
-
-    std::string collectACData();
-
 private:
-    static constexpr const char* TAG = "R33SlaveController";
+    static constexpr const char* TAG = "R33SunShadeController";
+
+    // reconnect timing
+    static constexpr uint32_t RECONNECT_DELAY_MS = 7000;
+
+    // event bits
+    static constexpr EventBits_t WS_EVENT_DISCONNECTED = (1 << 0);
 
     TaskHandle_t       messageTaskHandle        = nullptr;
     TaskHandle_t       measurementTaskHandle        = nullptr;

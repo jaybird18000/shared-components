@@ -31,10 +31,12 @@ public:
 
     static WifiMgr& instance();
     void initialize();
+    void restartWifi();
+    void restartNetIf();
     bool isSTAConnected() const;
     bool isAPConnected() const;
     bool isApMode() const;
-    static bool isMaster();
+//    static bool isMaster();
     bool mdnsStarted();
     std::string statusText() const;
     std::string currentWifiSSID() const;

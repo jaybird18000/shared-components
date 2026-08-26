@@ -2,6 +2,8 @@
 #include "nvsMgr.h"
 #include "LedController.h"
 #include "WsServer.h"
+#include "DeviceConfig.h"
+#include "DebugServices.h"
 #include <esp_event.h>
 #include <esp_log.h>
 #include <esp_netif.h>
@@ -40,11 +42,6 @@ WifiMgr::WifiMgr()
     ESP_LOGI(TAG, "wifiMgr constructor currentSTA_Config() STA SSID: %s  PASS: %s", STA_config_.ssid.c_str(), STA_config_.password.c_str());
     ESP_LOGI(TAG, "wifiMgr constructor currentAP_Config() AP SSID: %s  PASS: %s ip: %s gw: %s nm: %s", AP_config_.ssid.c_str(), AP_config_.password.c_str(), AP_config_.ipAddress.c_str(), AP_config_.gateway.c_str(), AP_config_.netmask.c_str());
 
-
-
-    isMaster_ = STA_config_.isMaster;
-    ESP_LOGI(TAG, "Configured role: %s", isMaster_ ? "MASTER" : "SLAVE");
-
 }
 
 WifiMgr& WifiMgr::instance()
@@ -70,11 +67,6 @@ bool WifiMgr::isApMode() const
         return true;
     }
     return false;
-}
-
-bool WifiMgr::isMaster()
-{
-    return isMaster_;
 }
 
 std::string WifiMgr::statusText() const
@@ -237,6 +229,22 @@ void WifiMgr::initialize()
     
 }
 
+void WifiMgr::restartWifi()
+{
+    esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_wifi_connect();
+    vTaskDelay(pdMS_TO_TICKS(8000));
+}
+
+void WifiMgr::restartNetIf()
+{
+    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_action_disconnected(netif, NULL, 0, NULL);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_netif_action_connected(netif, NULL, 0, NULL);
+}
+
 void WifiMgr::wifi_retry_task(void* param)
 {
     uint32_t delayMs = 4000;  // start with 4 seconds
@@ -315,12 +323,22 @@ void WifiMgr::configAndStartMdns()
     // nvs_get_str(handle, "mdns_host", hostname, &len);
     // mdns_hostname_set(hostname);
     mdns_init();
-    if(!isMaster_)
+    if(!DeviceConfig::instance().isMasterDevice())
     {
-        mdns_hostname_set("r33-slave");
-        mdns_instance_name_set("R33 Slave Controller");
-        mdns_service_add("R33 Slave Controller", "_http", "_tcp", 80, NULL, 0);
-        ESP_LOGW(TAG,"Setting hostname: r33-slave and starting mdns advertisements");
+        if(DeviceConfig::instance().isSunShadeDevice())
+        {
+            mdns_hostname_set("r33-sunshade");
+            mdns_instance_name_set("R33 Sunshade Controller");
+            mdns_service_add("R33 Sunshade Controller", "_http", "_tcp", 80, NULL, 0);
+            ESP_LOGW(TAG,"Setting hostname: r33-sunshade and starting mdns advertisements");
+        }
+        else
+        {
+            mdns_hostname_set("r33-slave");
+            mdns_instance_name_set("R33 Slave Controller");
+            mdns_service_add("R33 Slave Controller", "_http", "_tcp", 80, NULL, 0);
+            ESP_LOGW(TAG,"Setting hostname: r33-slave and starting mdns advertisements");
+        }
     }
     else
     {
@@ -346,7 +364,7 @@ void WifiMgr::wifi_event_handler(void *event_handler_arg, esp_event_base_t event
             break;
         case WIFI_EVENT_STA_CONNECTED:
             ESP_LOGI(TAG, "STA connected to SSID %s", instance->STA_config_.ssid.c_str());
-            WsServer::instance().postDebug("STA connected to SSID " + instance->STA_config_.ssid);
+            debugServices::postDebug("STA connected to SSID " + instance->STA_config_.ssid);
             LedController::instance().off(1);
             LedController::instance().stopFlash();
             LedController::instance().flash(1,800,200);
@@ -364,7 +382,7 @@ void WifiMgr::wifi_event_handler(void *event_handler_arg, esp_event_base_t event
             mdnsStartedSta = false;
             wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
             ESP_LOGI(TAG, "STA disconnected: reason=%d", event->reason);
-            WsServer::instance().postDebug("STA disconnected: reason=" + std::to_string(event->reason));
+            debugServices::postDebug("STA disconnected: reason=" + std::to_string(event->reason));
             LedController::instance().off(1);
             LedController::instance().stopFlash();
             LedController::instance().flash(1,200,800);
@@ -409,7 +427,7 @@ void WifiMgr::wifi_event_handler(void *event_handler_arg, esp_event_base_t event
         instance->wifiMode_ = instance->determineMode(event_enum);
         instance->sta_connected_ = true;
         ESP_LOGI(TAG, "STA got IP: %s wifiMode_:%d ", ip_str, instance->wifiMode_);
-        WsServer::instance().postDebug("STA got IP: %s wifiMode_:%d ", ip_str, instance->wifiMode_);
+        debugServices::postDebug("STA got IP: %s wifiMode_:%d ", ip_str, instance->wifiMode_);
         LedController::instance().off(1); 
         LedController::instance().stopFlash();
         LedController::instance().on(1);
@@ -423,7 +441,7 @@ void WifiMgr::wifi_event_handler(void *event_handler_arg, esp_event_base_t event
         vTaskDelay(pdMS_TO_TICKS(400));
 
         instance->startMdns();
-        WsServer::instance().postDebug("Starting mDNS");
+        debugServices::postDebug("Starting mDNS");
     }    
 
 }

@@ -1,5 +1,6 @@
 #include "Valves.h"
 #include "wsServer.h"
+#include "DebugServices.h"
 #include <esp_log.h>
 #include <driver/gpio.h>
 #include <esp_timer.h>
@@ -84,7 +85,7 @@ void Valve::update()
     if(isOpenLimit() && isClosedLimit()) {
         if(state_ != ValveState::Error) {
             ESP_LOGE("Valve", "%s : ERROR Both open and closed limit switches are active!", name_);
-            WsServer::instance().postDebug("%s : ERROR Both open and closed limit switches are active!", name_);
+            debugServices::postDebug("%s : ERROR Both open and closed limit switches are active!", name_);
         }
         state_ = ValveState::Error;
         actionStartUs_ = 0;

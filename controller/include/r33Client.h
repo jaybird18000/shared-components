@@ -4,6 +4,8 @@
 #include "esp_websocket_client.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "freertos/semphr.h"
+#include <atomic>
 #include <functional>
 
 class R33Client {
@@ -20,16 +22,17 @@ public:
     // Send a message to the master
     bool send(const std::string& msg);
 
-    // Check if connected
-    bool isConnected() const { return connected; }
+    bool sendBinary(const uint8_t *data, size_t len);
 
-    bool isStarted() const { return clientStarted;}
+    bool testMethod();
+    
+    // Check if connected
+    bool isConnected() const { return connected.load(); }
+
+    bool isStarted() const { return clientStarted.load();}
 
     void setClientDisconnectedCallback(std::function<void(int sockfd)> cb);
     void notifyClientDisconnected(int sockfd);
-
-
-    void setCommandQueue(QueueHandle_t q) { commandQueue = q; }
 
 private:
     static void eventHandler(void* handler_args,
@@ -46,10 +49,13 @@ private:
     uint32_t reconnectTimestamp = 0;
     
 private:
-    QueueHandle_t commandQueue = nullptr;
+
+    SemaphoreHandle_t clientMutex = nullptr;
+    int tempVar1 = 1;
+    int tempVar2 = 2;
     esp_websocket_client_handle_t client = nullptr;
-    bool connected = false;
-    bool clientStarted = false;
+    std::atomic_bool connected = false;
+    std::atomic_bool clientStarted = false;
     std::string wsUri;
     std::function<void(int sockFd)> clientDisconnectedCallback_;
     static constexpr const char* TAG = "r33Client";

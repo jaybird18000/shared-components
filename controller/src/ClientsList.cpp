@@ -1,4 +1,5 @@
 #include "ClientsList.h"
+#include "ConsoleApp.h"
 #include "esp_log.h"
 #include <chrono>
 
@@ -41,6 +42,14 @@ void ClientsList::updateLastSeen(int sockfd) {
     }
     xSemaphoreGiveRecursive(mtx_);
 }
+void ClientsList::updateLastPongRxTime(int sockfd) {
+    xSemaphoreTakeRecursive(mtx_, portMAX_DELAY);
+    auto it = clients_.find(sockfd);
+    if (it != clients_.end()) {
+        it->second.lastPongRxTime = std::chrono::steady_clock::now();
+    }
+    xSemaphoreGiveRecursive(mtx_);
+}
 
 void ClientsList::updateLastDebugMsgCtr(int sockfd, uint32_t ctr)
 {
@@ -57,6 +66,16 @@ void ClientsList::updatePingSent(int sockfd, bool sent) {
     auto it = clients_.find(sockfd);
     if (it != clients_.end()) {
         it->second.pingSent = sent;
+    }
+    xSemaphoreGiveRecursive(mtx_);
+}
+
+void ClientsList::updateClientType(int sockfd, ClientInfo::ClientType type)
+{
+    xSemaphoreTakeRecursive(mtx_, portMAX_DELAY);
+    auto it = clients_.find(sockfd);
+    if (it != clients_.end()) {
+        it->second.type = type;
     }
     xSemaphoreGiveRecursive(mtx_);
 }
@@ -136,12 +155,26 @@ std::vector<ClientInfo*> ClientsList::getBrowsers() {
     return out;
 }
 
-void ClientsList::debugPrintAll(const char* tag)
+std::vector<ClientInfo *> ClientsList::getSunshades()
+{
+    xSemaphoreTakeRecursive(mtx_, portMAX_DELAY);
+    std::vector<ClientInfo*> out;
+    for (auto& [fd, info] : clients_) {
+        if (info.type == ClientInfo::ClientType::SUNSHADE) out.push_back(&info);
+    }
+    xSemaphoreGiveRecursive(mtx_);
+    return out;
+}
+
+void ClientsList::debugPrintAll(const char* tag, bool toLog, bool toConsole)
 {
     // Lock the mutex safely
     xSemaphoreTake(mtx_, portMAX_DELAY);
 
-    ESP_LOGW(tag, "----- ClientsList (%u clients) -----", clients_.size());
+    char header[64];
+    snprintf(header, sizeof(header), "----- ClientsList (%u clients) -----", (unsigned)clients_.size());
+    if (toLog) ESP_LOGW(tag, "%s", header);
+    if (toConsole) ConsoleApp::instance().writeToConsole(header);
 
     auto now = std::chrono::steady_clock::now();
 
@@ -153,16 +186,57 @@ void ClientsList::debugPrintAll(const char* tag)
             now - info.lastSeen
         ).count();
 
-        ESP_LOGW(tag,
-                 "fd=%d  id=%s  type=%s  pingSent=%d  age=%ds",
+        char line[128];
+        snprintf(line, sizeof(line),
+                 "fd=%-4d id=%-7s type=%-9s pingSent=%-3d age=%-6ds",
                  fd,
                  info.id.c_str(),
                  ClientInfo::typeToString(info.type),
                  info.pingSent,
                  ageSec);
+
+        if (toLog) ESP_LOGW(tag, "%s", line);
+        if (toConsole) ConsoleApp::instance().writeToConsole(line);
     }
 
-    ESP_LOGW(tag, "--------------------------------------");
+    const char* footer = "--------------------------------------";
+    if (toLog) ESP_LOGW(tag, "%s", footer);
+    if (toConsole) ConsoleApp::instance().writeToConsole(footer);
+
+    xSemaphoreGive(mtx_);
+}
+
+void ClientsList::debugPrintCounters(const char* tag, bool toLog, bool toConsole)
+{
+    // Lock the mutex safely
+    xSemaphoreTake(mtx_, portMAX_DELAY);
+
+    char header[64];
+    snprintf(header, sizeof(header), "----- ClientsList Counters (%u clients) -----", (unsigned)clients_.size());
+    if (toLog) ESP_LOGW(tag, "%s", header);
+    if (toConsole) ConsoleApp::instance().writeToConsole(header);
+
+    for (auto& kv : clients_) {
+        int fd = kv.first;
+        const ClientInfo& info = kv.second;
+
+        char line[160];
+        snprintf(line, sizeof(line),
+                 "fd=%-4d type=%-9s lastSentDebugMsgCtr=%-6lu lastSentMasterDebugMsgCtr=%-6lu webClientLastReceivedDebugMsgCtr=%-6lu debugMessagesInSync=%-3d",
+                 fd,
+                 ClientInfo::typeToString(info.type),
+                 info.lastSentDebugMsgCtr,
+                 info.getLastSentMasterDebugMsgCtr(),
+                 info.webClientLastReceivedDebugMsgCtr,
+                 info.debugMessagesInSync);
+
+        if (toLog) ESP_LOGW(tag, "%s", line);
+        if (toConsole) ConsoleApp::instance().writeToConsole(line);
+    }
+
+    const char* footer = "--------------------------------------";
+    if (toLog) ESP_LOGW(tag, "%s", footer);
+    if (toConsole) ConsoleApp::instance().writeToConsole(footer);
 
     xSemaphoreGive(mtx_);
 }

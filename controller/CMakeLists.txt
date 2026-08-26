@@ -3,21 +3,31 @@ idf_component_register(
     SRCS
         "src/wifiMgr.cpp"
         "src/wsServer.cpp"
+        "src/wsServerMgr.cpp"
         "src/r33Client.cpp"
         "src/nvsMgr.cpp"
         "src/system.cpp"
         "src/Valves.cpp"
-        "src/WsServerMgr.cpp"
-        "src/r33Client.cpp"
+        "src/BrowserController.cpp"
+        "src/r33MasterController.cpp"
+        "src/r33ClientController.cpp"
         "src/r33SlaveController.cpp"
+        "src/r33SunShadeController.cpp"
         "src/ClientsList.cpp"
-        "src/WsReceiver.cpp"
         "src/ACMonitor.cpp"
         "src/SharedDataStore.cpp"
         "src/LedController.cpp"
         "src/IconData.cpp"
         "src/OtaManager.cpp"
         "src/version.cpp"
+        "src/DeviceConfig.cpp"
+        "src/Utilities.cpp"
+        "src/TaskUtilities.cpp"
+        "src/DebugServices.cpp"
+        "src/DebugControl.cpp"
+        "src/DebugCommands.cpp"
+        "src/ConsoleApp.cpp"
+        "src/ClientInfo.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES
@@ -27,6 +37,7 @@ idf_component_register(
         esp_event
         esp_adc
         esp_driver_gpio
+        esp_driver_uart
         nvs_flash
         mdns
         arduinojson

@@ -6,6 +6,7 @@
 // Define firmware versions for master and slave
 #define MASTER_FIRMWARE_VERSION "1.1.0"
 #define SLAVE_FIRMWARE_VERSION "1.1.0"
+#define SUNSHADE_FIRMWARE_VERSION "1.1.0"
 
 /**
  * Get the current firmware version based on device role
@@ -22,5 +23,7 @@ std::string getMasterVersion();
  * Get the slave firmware version
  */
 std::string getSlaveVersion();
+
+std::string getSunShadeVersion();
 
 #endif // VERSION_H

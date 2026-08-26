@@ -1,5 +1,7 @@
 #include "OtaManager.h"
 #include "nvsMgr.h"
+#include "version.h"
+#include "DeviceConfig.h"
 #include <esp_ota_ops.h>
 #include <esp_http_client.h>
 //#include <app_update.h>
@@ -144,15 +146,16 @@ void OtaManager::fetchVersionInfo(const std::string& updateServerUrl) {
   esp_http_client_cleanup(client);
 
   // Parse JSON metadata with minimal stack allocation
-  DynamicJsonDocument doc(512);  // Very small buffer
+  DynamicJsonDocument doc(1024);  // Very small buffer
   DeserializationError error = deserializeJson(doc, response_data);
-  free(response_data);
-
+  // Do not free response data until after processing the doc below
+  // there is some sort of race condition with memory allocation
   if (error) {
     ESP_LOGE(TAG, "JSON parse error: %s", error.c_str());
     if (_statusCallback) {
       _statusCallback(std::string("JSON parse error: ") + error.c_str(), false);
     }
+    free(response_data);
     return;
   }
 
@@ -168,7 +171,7 @@ void OtaManager::fetchVersionInfo(const std::string& updateServerUrl) {
     availableVersion = doc["versions"]["r33-master"]["latest"].as<const char*>();
     ESP_LOGI(TAG, "Found version in versions.r33-master.latest: %s", availableVersion.c_str());
   }
-
+  free(response_data);
   _availableVersion = availableVersion;
 
   ESP_LOGI(TAG, "Current version: %s, Available version: %s", 
@@ -203,13 +206,23 @@ void OtaManager::startUpdate(const std::string& updateServerUrl) {
   }
   
   // Determine device name (master or slave) from device role
-  bool isMaster = WifiMgr::instance().isMaster();
-  if (isMaster) {
-    firmwareUrl += "master/r33-master.bin";
-  } else {
-    firmwareUrl += "slave/r33-slave.bin";
+   switch (DeviceConfig::instance().getDeviceRole()) {
+    case DeviceRole::MASTER:
+        firmwareUrl += "master/r33-master.bin";
+        break;
+    case DeviceRole::SLAVE:
+        firmwareUrl += "slave/r33-slave.bin";
+        break;
+    case DeviceRole::SUNSHADE:
+        firmwareUrl += "sunshade/r33-sunshade.bin";
+        break;
+    default:
+        if (_statusCallback) {
+            _statusCallback("Unknown device role", false);
+        }
+        _isUpdating = false;
+        return;
   }
-
   ESP_LOGI(TAG, "Starting firmware update from: %s", firmwareUrl.c_str());
   downloadAndInstallFirmware(firmwareUrl);
 }

@@ -50,19 +50,14 @@ public:
 
     esp_err_t start();
     httpd_handle_t serverHandle();
-    QueueHandle_t incomingQueue();
 
     // Sending APIs
-    void postDebug(const std::string& message);
-    void postDebug(const char* fmt, ...);
+
     void sendTextMsg(int sockfd, const std::string& msg);
+    void sendBinaryMsg(int sockfd, const uint8_t* data, size_t len);
     void sendPingMsg(int sockfd);
     void broadcastText(const std::string& msg, AudienceType audience);
-    void broadcastDebugText(uint32_t id, const std::string& msg, AudienceType audience);
-    void sendDebugMsgsSince(int msgCtr, int sockfd);
-    void sendDebugMsgsSinceToR33SlaveControllerCommandQueue(int msgCtr);
-    void sendMsgToR33SlaveControllerCommandQueue(const std::string& msg);    
-    void setSlaveControllerCommandQueue(QueueHandle_t q) { slaveControllerCommandQueue = q; }
+
     void broadcastPing();
 
 private:
@@ -80,10 +75,7 @@ private:
     esp_err_t handleWsCommon(httpd_req_t* req, bool isSlave);
     static void sendWork(void* arg);
     httpd_handle_t server_;
-    QueueHandle_t incomingQueue_;
-    std::deque<DebugEntry> debugLog_;
-    uint32_t debugMsgCounter_ ;
-    QueueHandle_t slaveControllerCommandQueue;
+
 };
 
 #endif // WS_SERVER_H

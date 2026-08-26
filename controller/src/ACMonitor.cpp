@@ -1,5 +1,6 @@
 #include "ACMonitor.h"
 #include "WsServer.h"
+#include "DebugServices.h"
 #include "esp_log.h"
 #include <cmath>
 #include <cstring>
@@ -214,7 +215,7 @@ ACMonitor::ACResults ACMonitor::readSamples(MeasurementType type, adc_channel_t 
     {
 //        ESP_LOGI(TAG,"No VAC present");
         // r was initialized to 0
-//        WsServer::instance().postDebug("No Voltage Present, skip");
+//        debugServices::postDebug("No Voltage Present, skip");
     }
     xSemaphoreGiveRecursive(adcMutex_);
 
@@ -277,11 +278,11 @@ ACMonitor::ACResults ACMonitor::analyze_ac(MeasurementType type,
             needToComputeCurrentDcOffset = false;
             ESP_LOGI(TAG,"Current - DC_Offset %0.1f ", Current_DC_Offset);
             
-            WsServer::instance().postDebug("Current - DC_Offset %0.1f", Current_DC_Offset);
+            debugServices::postDebug("Current - DC_Offset %0.1f", Current_DC_Offset);
             if(Current_DC_Offset > 2500.0 || Current_DC_Offset < 1500.0)
             {
                 ESP_LOGI(TAG,"Current - Invalid DC_Offset %0.1f set to 1950.0", Current_DC_Offset);
-                WsServer::instance().postDebug("Current - Invalid DC_Offset %0.1f set to 1950.0", Current_DC_Offset);
+                debugServices::postDebug("Current - Invalid DC_Offset %0.1f set to 1950.0", Current_DC_Offset);
                 printSamples(samples, count, "Current - Invalid DC_OFFSET computed" );
                 Current_DC_Offset = 1950.0;
             }
@@ -324,14 +325,14 @@ ACMonitor::ACResults ACMonitor::analyze_ac(MeasurementType type,
             if(needTocomputeCurrentDcOffsetCounter < 5)
             {
                 ESP_LOGI(TAG,"Current - dcOffset: %0.2f Irms: %0.2f Ipeak: %0.2f ",r.dc_offset, r.rms_current, r.peak_current);
-                WsServer::instance().postDebug("Current - dcOffset: %0.2f Irms: %0.2f Ipeak: %0.2f ",r.dc_offset, r.rms_current, r.peak_current);
+                debugServices::postDebug("Current - dcOffset: %0.2f Irms: %0.2f Ipeak: %0.2f ",r.dc_offset, r.rms_current, r.peak_current);
                 needToComputeCurrentDcOffset = true;  // force recalculation of dc offset on next read if current is above 30A, this is a safety measure to prevent runaway current readings due to an invalid dc offset calculation
                 needTocomputeCurrentDcOffsetCounter++;
             }
             else
             {
                 ESP_LOGI(TAG,"Current - tried 5 times, give up trying to recalculate dc offset ");
-                WsServer::instance().postDebug("Current - tried 5 times,give up trying to recalculate dc offset ");
+                debugServices::postDebug("Current - tried 5 times,give up trying to recalculate dc offset ");
             }
         }
     }
