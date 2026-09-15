@@ -31,7 +31,7 @@ enum class TaskNames : std::uint8_t {
 	AC_UPDATE_TASK,
 	BROADCAST_STATUS_TASK,
 	OTA_SERVER_TASK,
-	OTA_MANAGER_TASK,
+	OTA_MANAGER_MESSAGE_TASK,
 	Count
 };
 
@@ -176,7 +176,7 @@ public:
 // *******************************************
 inline constexpr std::array<TaskDefinition, static_cast<std::size_t>(TaskNames::Count)> TaskInfoByName = {{
 	{TaskNames::No_TASK_NAME, "NoTask", "", 0, 4096, 0, false},
-	{TaskNames::CONSOLE_APP_TASK, "ConsoleApprTask", "console_app_queue", 5, 4096, 20, true},
+	{TaskNames::CONSOLE_APP_TASK, "ConsoleAppTask", "console_app_queue", 5, 4096, 20, true},
 	{TaskNames::WS_SERVER_TASK, "WsServerTask", "ws_server_queue", 5, 4096, 20, true},
 	{TaskNames::WS_SERVER_MGR_TASK, "WsServerMgrTask", "ws_server_mgr_queue", 5, 4096, 20, true},
 	{TaskNames::WS_SERVER_MGR_PING_TASK, "WsServerMgrPing", "", 4, 4096, 0, false},
@@ -193,11 +193,20 @@ inline constexpr std::array<TaskDefinition, static_cast<std::size_t>(TaskNames::
 	{TaskNames::AC_UPDATE_TASK, "WsServerMgrAcUpdate", "ac_update_queue", 4, 4096, 20, true},
 	{TaskNames::BROADCAST_STATUS_TASK, "WsBroadcastStatus", "", 4, 4096, 0, false},
 	{TaskNames::OTA_SERVER_TASK, "OtaTask", "", 5, 4096, 0, false},
-	{TaskNames::OTA_MANAGER_TASK, "OtaUpdateTask", "", 5, 4096, 0, false},
+	{TaskNames::OTA_MANAGER_MESSAGE_TASK, "OtaMessageTask", "ota_manager_message_queue", 4, 4096, 20, true},
 }};
 
 constexpr std::size_t toIndex(TaskNames taskName) {
 	return static_cast<std::size_t>(taskName);
+}
+
+// enum class can't hold member functions in C++, so this free function stands in for TaskNames::toString()
+inline const char* taskNameToString(TaskNames taskName) {
+	std::size_t index = toIndex(taskName);
+	if (index >= TaskInfoByName.size()) {
+		return "UNKNOWN_TASK";
+	}
+	return TaskInfoByName[index].taskLabel;
 }
 
 const TaskDefinition& definition(TaskNames taskName);

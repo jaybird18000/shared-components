@@ -39,37 +39,44 @@ void r33MasterController::start() {
 void r33MasterController::r33MasterControllerTask(void* param) {
     while (true) {
         TaskUtilities::MsgItem item;
-//        if (xQueueReceive(webClientQueue_, &item, portMAX_DELAY)) {
         if (TaskUtilities::waitOnQueue(TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK, &item, portMAX_DELAY) == pdTRUE)
         {
-
-            std::string payload(item.data, item.len);  // local, safe
-//            ESP_LOGI(TAG, "Processing web payload from fd=%d: %s",
-//                     item.sockfd, payload.c_str());
-            if(item.fromBrowser)
+            // highjack the debug message and send to the browser
+            if((item.fromClient) && (item.msgType == TaskUtilities::MsgTypes::DEBUG))
             {
+                // send all debug messages from clients to the browser controller
+                item.toTask = TaskUtilities::TaskNames::BROWSER_CONTROLLER_MESSAGE_TASK;
+                TaskUtilities::sendToQueue(TaskUtilities::TaskNames::BROWSER_CONTROLLER_MESSAGE_TASK, &item, 0);
+            }            
+            else 
+            {
+                std::string payload(item.data, item.len);  // local, safe
+    //            ESP_LOGI(TAG, "Processing web payload from fd=%d: %s",
+    //                     item.sockfd, payload.c_str());
                 ClientsList::instance().updateLastSeen(item.sockfd);
                 const char* role = item.fromBrowser ? "BROWSER" : "SLAVE";
-                //ESP_LOGI(TAG, "Msg rcvd fd=%d from %s msg %s", item.sockfd, role, payload.c_str());
-                r33MasterController::handleWebClientMsg(item.sockfd, payload);
+                if(item.fromBrowser){
 
-            }
-            else
-            {
-                const char* role = item.fromBrowser ? "BROWSER" : "SLAVE";
-                //ESP_LOGI(TAG, "Msg rcvd fd=%d from %s msg %s", item.sockfd, role, payload.c_str());
-                r33MasterController::handleSlaveClientMsg(item.sockfd, payload);
-            }
+                    //ESP_LOGI(TAG, "Msg rcvd fd=%d from %s msg %s", item.sockfd, role, payload.c_str());
+                    r33MasterController::handleBrowserClientMsg(item.sockfd, payload);
 
+                }
+                else
+                {
+
+                    //ESP_LOGI(TAG, "Msg rcvd fd=%d from %s msg %s", item.sockfd, role, payload.c_str());
+                    r33MasterController::handleWebSrvClientMsg(item.sockfd, payload);
+                }
+            }
         }
     }
 }
 
-void r33MasterController::handleWebClientMsg(int sockfd, const std::string &message)
+void r33MasterController::handleBrowserClientMsg(int sockfd, const std::string &message)
 {
 
         if (message.find("start_generator") != std::string::npos) {
-            ESP_LOGW(TAG, "handleWebClientMsg:start_generator command received: Len %d", (int)message.size());
+            ESP_LOGW(TAG, "handleBrowserClientMsg:start_generator command received: Len %d", (int)message.size());
 
             debugServices::postDebug(std::string("Start generator cmd rcvd "));
 
@@ -88,7 +95,7 @@ void r33MasterController::handleWebClientMsg(int sockfd, const std::string &mess
             item.fromMaster = true;
             item.fromBrowser = true;
             item.fromTask = TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK;
-            item.toTask = TaskUtilities::TaskNames::R33_CLIENT_CONTROLLER_MESSAGE_TASK;
+            item.toTask = TaskUtilities::TaskNames::R33_SLAVE_CONTROLLER_MESSAGE_TASK;
             item.msgType = TaskUtilities::MsgTypes::DATA;
             item.frameType = HTTPD_WS_TYPE_TEXT;
             item.setMsg(message);
@@ -100,7 +107,7 @@ void r33MasterController::handleWebClientMsg(int sockfd, const std::string &mess
             return;
         }
         if (message.find("stop_generator") != std::string::npos) {
-//            ESP_LOGW(TAG, "handleWebClientMsg:stop_generator command received: Len %d", (int)message.size());
+//            ESP_LOGW(TAG, "handleBrowserClientMsg:stop_generator command received: Len %d", (int)message.size());
 //            genRelay.setEnabled(!genRelay.enabled());
             //genRelay.momentary();
             debugServices::postDebug(std::string("Stop Generator cmd rcvd "));
@@ -119,7 +126,7 @@ void r33MasterController::handleWebClientMsg(int sockfd, const std::string &mess
             item.fromMaster = true;
             item.fromBrowser = true;
             item.fromTask = TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK;
-            item.toTask = TaskUtilities::TaskNames::R33_CLIENT_CONTROLLER_MESSAGE_TASK;
+            item.toTask = TaskUtilities::TaskNames::R33_SLAVE_CONTROLLER_MESSAGE_TASK;
             item.msgType = TaskUtilities::MsgTypes::DATA;
             item.frameType = HTTPD_WS_TYPE_TEXT;
             item.setMsg(message);
@@ -131,7 +138,7 @@ void r33MasterController::handleWebClientMsg(int sockfd, const std::string &mess
             return;
         }
         if (message.find("toggle_gen_valve") != std::string::npos) {
-            ESP_LOGW(TAG, "handleWebClientMsg:toggle_gen_valve command received");
+            ESP_LOGW(TAG, "handleBrowserClientMsg:toggle_gen_valve command received");
             if (valves.generatorValve().state() == ValveState::Open) {
                 valves.closeGenerator();
             } else {
@@ -142,7 +149,7 @@ void r33MasterController::handleWebClientMsg(int sockfd, const std::string &mess
             return;
         }
         if (message.find("toggle_ac_valve") != std::string::npos) {
-            ESP_LOGW(TAG, "handleWebClientMsg:toggle_ac_valve command received");
+            ESP_LOGW(TAG, "handleBrowserClientMsg:toggle_ac_valve command received");
             if (valves.acValve().state() == ValveState::Open) {
                 valves.closeAirConditioner();
             } else {
@@ -152,10 +159,10 @@ void r33MasterController::handleWebClientMsg(int sockfd, const std::string &mess
 
             return;
         }
-        ESP_LOGI(TAG, "handleWebClientMsg: unhandled message from web client: %s", message.c_str());
+        ESP_LOGI(TAG, "handleBrowserClientMsg: unhandled message from web client: %s", message.c_str());
 }
 
-void r33MasterController::handleSlaveClientMsg(int sockfd, const std::string& message)
+void r33MasterController::handleWebSrvClientMsg(int sockfd, const std::string& message)
 {
     DynamicJsonDocument doc(256);
     deserializeJson(doc, message);

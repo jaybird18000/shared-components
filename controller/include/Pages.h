@@ -238,6 +238,22 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
       color:#eef3f6;
     }
 
+    .ota-input-line {
+      display:grid;
+      grid-template-columns:70px minmax(0, 1fr);
+      align-items:center;
+      gap:10px;
+      margin-bottom:8px;
+    }
+    .ota-input-line label {
+      margin:0;
+      color:#9bb5c9;
+    }
+    .ota-input-line input {
+      width:100%;
+      min-width:0;
+    }
+
     .input-flex { display:flex; align-items:center; gap:10px; }
     .input-flex input { flex:1; min-width:0; }
 
@@ -524,10 +540,20 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
               <span class="status-label">Available Version</span>
               <span id="availableVersion" class="status-value">--</span>
             </div>
+            <div class="status-row">
+              <span class="status-label">Firmware Server</span>
+              <span id="otaServerStatus" class="status-value">--</span>
+            </div>
 
             <div class="input-row">
-              <label for="updateServerUrl">Update Server URL</label>
-              <input id="updateServerUrl" type="text" placeholder="http://192.168.1.100:8000" autocomplete="off" spellcheck="false" />
+              <div class="ota-input-line">
+                <label for="updateServerHost">URL:</label>
+                <input id="updateServerHost" type="text" placeholder="192.168.1.100 or r33-ota.local" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="ota-input-line">
+                <label for="updateServerPort">PORT:</label>
+                <input id="updateServerPort" type="number" min="1" max="65535" placeholder="8000" autocomplete="off" />
+              </div>
             </div>
 
             <button class="button secondary" onclick="checkForUpdates()">Check for Updates</button>
@@ -989,8 +1015,15 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
       }
 
       if (payload.type === 'ota_url_loaded') {
-        document.getElementById('updateServerUrl').value = payload.url || '';
-        appendLog('Update server URL loaded');
+        document.getElementById('updateServerHost').value = payload.host || '';
+        document.getElementById('updateServerPort').value = payload.port || '';
+        appendLog('Update server address loaded');
+      }
+
+      if (payload.type === 'ota_server_status') {
+        const serverStatus = document.getElementById('otaServerStatus');
+        serverStatus.textContent = payload.online ? 'Online' : 'Offline';
+        serverStatus.style.color = payload.online ? '#4caf50' : '#e53935';
       }
 
       if (payload.type === 'current_version_info') {
@@ -1167,40 +1200,50 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
     /* ---------------------------------------------------------
        OTA UPDATE FUNCTIONS
     --------------------------------------------------------- */
+    function getUpdateServerSettings() {
+      const host = document.getElementById('updateServerHost').value.trim();
+      const port = document.getElementById('updateServerPort').value.trim();
+      const portNumber = Number(port);
+      if (!host || host.includes('://') || host.includes('/') || host.includes(':') ||
+          !port || !Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
+        appendLog('Enter a host without http:// and a valid port');
+        return null;
+      }
+      return {host, port, url: `http://${host}:${port}`};
+    }
+
     function checkForUpdates() {
-      const updateServerUrl = document.getElementById('updateServerUrl').value;
-      if (!updateServerUrl) {
-        appendLog('Please enter update server URL');
+      const updateServer = getUpdateServerSettings();
+      if (!updateServer) {
         return;
       }
-      // Save the URL first
       sendMessage({
         command: 'save_ota_url',
-        url: updateServerUrl
+        host: updateServer.host,
+        port: updateServer.port
       });
-      // Then check for updates
       sendMessage({
         command: 'check_updates',
-        update_server_url: updateServerUrl
+        update_server_url: updateServer.url
       });
       appendLog('Checking for updates...');
     }
 
     function startFirmwareUpdate() {
-      const updateServerUrl = document.getElementById('updateServerUrl').value;
-      if (!updateServerUrl) {
-        appendLog('Please enter update server URL');
+      if (!getUpdateServerSettings()) {
         return;
       }
       // Show custom confirmation dialog instead of browser confirm()
       document.getElementById('confirmationDialog').style.display = 'flex';
     }
-    
     function confirmFirmwareUpdate() {
-      const updateServerUrl = document.getElementById('updateServerUrl').value;
+      const updateServer = getUpdateServerSettings();
+      if (!updateServer) {
+        return;
+      }
       sendMessage({
         command: 'start_update',
-        update_server_url: updateServerUrl
+        update_server_url: updateServer.url
       });
       document.getElementById('updateProgress').style.display = 'block';
       document.getElementById('updateBtn').disabled = true;
@@ -1219,10 +1262,11 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
     window.addEventListener('load', () => {
       document.getElementById('debugLog').textContent = '';
       if (!socket) connectSocket();
-      // Request stored OTA server URL and current version
+      // Request stored OTA server URL, current version, and server status
       setTimeout(() => {
         sendMessage({ command: 'get_ota_url' });
         sendMessage({ command: 'get_current_version' });
+        sendMessage({ command: 'get_ota_server_status' });
       }, 500);
     });
   </script>

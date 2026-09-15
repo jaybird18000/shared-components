@@ -5,6 +5,7 @@
 #include "r33SunShadeController.h"
 #include "r33ClientController.h"
 #include "BrowserController.h"
+#include "OtaManager.h"
 #include "wifiMgr.h"
 #include "nvsMgr.h"
 #include "Pages.h"
@@ -67,8 +68,13 @@ extern "C" void system_setup(void)
     WsServer::instance().start();
     // 2. Start the server manager (worker + ping loop)
     wsServerMgr::instance().start();
+
+    OtaManager::instance().begin();
+
     // 3. Start the browser manager (worker + ping loop)
     BrowserController::instance().begin();
+
+
 
     if(DeviceConfig::instance().isMasterDevice())
     {

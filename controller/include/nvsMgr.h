@@ -28,8 +28,9 @@ public:
     WifiConfig currentSTA_Config() const;
     WifiConfig currentAP_Config() const;
 
-    void saveUpdateServerUrl(const std::string& url);
-    std::string getUpdateServerUrl() const;
+    void saveUpdateServer(const std::string& host, const std::string& port);
+    std::string getUpdateServerHost() const;
+    std::string getUpdateServerPort() const;
     
     void saveFirmwareVersion(const std::string& version);
     std::string getFirmwareVersion() const;
@@ -38,7 +39,6 @@ private:
 
     WifiConfig STA_config_;
     WifiConfig AP_config_;
-    std::string updateServerUrl_;
     std::string firmwareVersion_;
 
 

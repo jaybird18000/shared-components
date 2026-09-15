@@ -244,14 +244,8 @@ void R33Client::handleEvent(esp_event_base_t base,
         //may be using the same websocket client or some other resource that is not safe to use in this context.
             ESP_LOGI(TAG, "Connected to master");
             connected = true;
-            if(ClientsList::instance().findClient(1) == nullptr)
+            if(ClientsList::instance().checkForNewClient(1, ClientInfo::ClientType::MASTER))
             {
-                ESP_LOGI(TAG,"Adding %s client %d","MASTER", 1);
-
-                // we just connected to the master, the master is not a slave 
-                // and the sockfd is 1 since no other connections
-                ClientInfo info(1, "Master", ClientInfo::ClientType::MASTER);
-                ClientsList::instance().addClient(1, info);
                 ClientsList::instance().updateLastSeen(1);
                 ClientsList::instance().updatePingSent(1, false);
                 TaskUtilities::MsgItem item{};
@@ -266,6 +260,10 @@ void R33Client::handleEvent(esp_event_base_t base,
                 item.setMsg("Connected to master");
                 TaskUtilities::sendToQueue(TaskUtilities::TaskNames::R33_CLIENT_CONTROLLER_MESSAGE_TASK, &item, 0);
                 
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Connected Event fired, Master already exists in the ClientsList");
             }
             break;
 
@@ -309,9 +307,6 @@ void R33Client::handleEvent(esp_event_base_t base,
                 ClientsList::instance().updateLastSeen(1);
                 ClientsList::instance().updatePingSent(1, false);
                 // ⭐ Forward message to slave controller queue
-//                if (commandQueue)
-                if(TaskUtilities::queueHandle(TaskUtilities::TaskNames::R33_CLIENT_CONTROLLER_MESSAGE_TASK) != nullptr)
-                {
 
                     // create msgItem from socketRcv buffer
 
@@ -320,22 +315,30 @@ void R33Client::handleEvent(esp_event_base_t base,
                     item.deserialize(reinterpret_cast<const uint8_t*>(data->data_ptr), data->data_len);
                     item.print();
 
-                    {
-                        if (TaskUtilities::sendToQueue(TaskUtilities::TaskNames::R33_CLIENT_CONTROLLER_MESSAGE_TASK, &item, 0) != pdTRUE)
-                        {
-                            ESP_LOGW(TAG, "R33_CLIENT_CONTROLLER_MESSAGE_TASK queue full, dropping message");
+                    //{
+                    //    if (TaskUtilities::sendToQueue(TaskUtilities::TaskNames::R33_CLIENT_CONTROLLER_MESSAGE_TASK, &item, 0) != pdTRUE)
+                    //    {
+                    //        ESP_LOGW(TAG, "R33_CLIENT_CONTROLLER_MESSAGE_TASK queue full, dropping message");
 
+                    //    }
+                    //}
+                    if(TaskUtilities::queueHandle(item.toTask) != nullptr)
+                    {
+                        ClientsList::instance().updateLastSeen(1);
+                        if (TaskUtilities::sendToQueue(item.toTask, &item, 0) != pdTRUE)
+                        {
+                            ESP_LOGW(TAG, "Queue for task %d full, dropping message", static_cast<int>(item.toTask));
                         }
                     }
-                } 
-                else 
-                {
-                    ESP_LOGW(TAG, "R33_CLIENT_CONTROLLER_MESSAGE_TASK queue handle is null, cannot forward message");
-                    ESP_LOGW(TAG, "No command queue set — cannot forward message");
-                }            
+                    else
+                    {
+                        ESP_LOGW(TAG, "Queue for task %s is null, cannot forward message", TaskUtilities::taskNameToString(item.toTask));
+                    }
+
                 break;
             }
-            else{
+            else
+            {
                 ESP_LOGW(TAG, "Unknown frame type rcvd %d", data->op_code);
 
             }

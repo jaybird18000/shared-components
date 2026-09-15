@@ -177,26 +177,9 @@ esp_err_t WsServer::handleWsCommon(httpd_req_t* req, bool isSlave) {
 //    ESP_LOGI("WS", "WebSocket handshake: GET %s", req->uri);
     bool justAddedClient = false;
     int sockfd = httpd_req_to_sockfd(req);
-    const char* role = isSlave ? "SLAVE" : "BROWSER";
-    ClientInfo::ClientType theType = ClientInfo::ClientType::BROWSER;
-    if(isSlave)
-    {
-        theType = ClientInfo::ClientType::SLAVE;
-    }
-
-    if (ClientsList::instance().findClient(sockfd) == nullptr) {
-        ESP_LOGI(TAG, "Adding %s client %d", role, sockfd);
-        if(isSlave)
-        {
-            debugServices::postDebug("Adding slave client ");
-        }
-        else{
-            debugServices::postDebug("Adding browser client ");
-        }
-        ClientInfo info(sockfd, isSlave ? "slave" : "ui", theType);
-        ClientsList::instance().addClient(sockfd, info);
-        justAddedClient = true;
-    }
+    ClientInfo::ClientType type = isSlave ? ClientInfo::ClientType::WSCLIENT : ClientInfo::ClientType::BROWSER;
+    justAddedClient = ClientsList::instance().checkForNewClient(sockfd, type);
+    const char* role = ClientInfo::typeToString(type);
 
     httpd_ws_frame_t frame = {};
     frame.type = HTTPD_WS_TYPE_TEXT;
@@ -229,7 +212,7 @@ esp_err_t WsServer::handleWsCommon(httpd_req_t* req, bool isSlave) {
     }
     else if((frame.type == HTTPD_WS_TYPE_TEXT) || (frame.type == HTTPD_WS_TYPE_BINARY)) 
     {
-        if(strcmp(role, "BROWSER") == 0 )
+        if(type == ClientInfo::ClientType::BROWSER)
         {
             TaskUtilities::MsgItem item{};
             item.sockfd = sockfd;
@@ -238,6 +221,8 @@ esp_err_t WsServer::handleWsCommon(httpd_req_t* req, bool isSlave) {
             item.fromBrowser = !isSlave;
             item.frameType = frame.type;
             item.len = 0;
+            // when browser sends message it does not use the taskUtilities::msgItem class
+            // so we do not need to read in and deserialize that size structure
             if (frame.len > sizeof(item.data)) {
                 ESP_LOGW(TAG, "payload too large (%u), truncating to %u",
                         (unsigned)frame.len, (unsigned)sizeof(item.data));
@@ -297,21 +282,12 @@ esp_err_t WsServer::handleWsCommon(httpd_req_t* req, bool isSlave) {
             item.data[item.len] = '\0'; // null-terminate the string
             if(DeviceConfig::instance().isMasterDevice())
             {
-                if(item.msgType == TaskUtilities::MsgTypes::DEBUG)
-                {
-                    // send all debug messages from clients to the browser controller
-                    item.toTask = TaskUtilities::TaskNames::BROWSER_CONTROLLER_MESSAGE_TASK;
-                    TaskUtilities::sendToQueue(TaskUtilities::TaskNames::BROWSER_CONTROLLER_MESSAGE_TASK, &item, 0);
-                }
-                else
-                {
-                    item.toTask = TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK;
-                    TaskUtilities::sendToQueue(TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK, &item, 0);
-                }
+                item.toTask = TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK;
+                TaskUtilities::sendToQueue(TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK, &item, 0);
             }
             else
             {
-                ESP_LOGW(TAG, "rcvd slave uri, but device is not master from %s fd=%d msg %s", role, item.sockfd, item.data);
+                ESP_LOGW(TAG, "rcvd slave uri in the wsServer, but device is not master from %s fd=%d msg %s", role, item.sockfd, item.data);
             }
         }
     }
@@ -320,7 +296,6 @@ esp_err_t WsServer::handleWsCommon(httpd_req_t* req, bool isSlave) {
         ESP_LOGW(TAG, "WebSocket unknown frame type %d from socket %d", frame.type, sockfd);
         return ESP_OK;
     }
-
 
     return ESP_OK;
 }
@@ -437,6 +412,10 @@ void WsServer::broadcastText(const std::string& msg, AudienceType audience)
         } else if ((info.type == ClientInfo::ClientType::BROWSER) &&
                    (audience == AudienceType::BROWSERS || audience == AudienceType::BOTH)) {
             sendTextMsg(fd, msg);
+        }
+        else
+        {
+//            ESP_LOGW("WsServer", "Client with fd %d has an unknown type %s", fd, info.type == ClientInfo::ClientType::SLAVE ? "SLAVE" : info.type == ClientInfo::ClientType::BROWSER ? "BROWSER" : "UNKNOWN");
         }
     });
 }

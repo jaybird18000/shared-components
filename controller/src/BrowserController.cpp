@@ -20,74 +20,12 @@
 static constexpr const char* TAG = "BrowserController";
 static ValvesController valves;
 static GenRelay genRelay;
-static OtaManager otaManager;
-
-// OTA task handle
-static TaskHandle_t otaTaskHandle = NULL;
-
-// Structure to pass OTA parameters to task
-struct OtaTaskParams {
-    std::string updateServerUrl;
-    int operation;  // 0 = check_updates, 1 = start_update
-};
 
 BrowserController& BrowserController::instance() {
     static BrowserController inst;
     return inst;
 }
-// Task function for OTA operations (runs on separate stack)
-static void otaTaskFunction(void* pvParameters) {
-    OtaTaskParams* params = (OtaTaskParams*)pvParameters;
-    
-    ESP_LOGI(TAG, "OTA task started: operation=%d, url=%s", params->operation, params->updateServerUrl.c_str());
-    
-    if (params->operation == 0) {
-        // Check for updates
-        std::string currentVersion = getFirmwareVersion();
-        otaManager.setStatusCallback([currentVersion](const std::string& version, bool success) {
-            if (success) {
-                std::string json = "{\"type\":\"version_info\",\"current_version\":\"" + currentVersion + "\",\"available_version\":\"" + version + "\"}";
-                WsServer::instance().broadcastText(json, WsServer::AudienceType::BROWSERS);
-                debugServices::postDebug("Available version: " + version);
-            } else {
-                debugServices::postDebug("Update check failed");
-            }
-        });
-        
-        otaManager.init(currentVersion);
-        otaManager.checkForUpdates(params->updateServerUrl);
-    } 
-    else if (params->operation == 1) {
-        // Start update - track progress to avoid debug spam
-        int lastPostedProgress = 0;
-        otaManager.setProgressCallback([&lastPostedProgress](int progress) {
-            std::string json = "{\"type\":\"update_progress\",\"progress\":" + std::to_string(progress) + "}";
-            WsServer::instance().broadcastText(json, WsServer::AudienceType::BROWSERS);
-            
-            // Only post debug for every 20% increase or at 100%
-            if (progress >= lastPostedProgress + 20 || progress == 100) {
-                lastPostedProgress = progress;
-                debugServices::postDebug("Update progress: " + std::to_string(progress) + "%");
-            }
-        });
-        
-        otaManager.setStatusCallback([](const std::string& message, bool success) {
-            std::string json = "{\"type\":\"update_status\",\"status\":\"" + std::string(success ? "success" : "error") + "\",\"message\":\"" + message + "\"}";
-            WsServer::instance().broadcastText(json, WsServer::AudienceType::BROWSERS);
-            if (success) {
-                debugServices::postDebug("✓ " + message);
-            } else {
-                debugServices::postDebug("✗ " + message);
-            }
-        });
-        
-        otaManager.init(getFirmwareVersion());
-        otaManager.startUpdate(params->updateServerUrl);
-    }
-    
-    delete params;
-    vTaskDelete(NULL);
-}
+
 static float s_lastVoltage = NAN;
 static float s_lastCurrent = NAN;
 static bool  s_haveLastAnalog = false;
@@ -112,7 +50,9 @@ void BrowserController::messageTaskEntry(void *param)
 
 void BrowserController::messageTaskLoop()
 {
-        while (true) {
+        ESP_LOGI(TAG, "Starting Browser Controller message task loop");
+        while (true) 
+        {
         TaskUtilities::MsgItem item;
 //        if (xQueueReceive(webClientQueue_, &item, portMAX_DELAY)) {
         if (TaskUtilities::waitOnQueue(TaskUtilities::TaskNames::BROWSER_CONTROLLER_MESSAGE_TASK, &item, portMAX_DELAY) == pdTRUE)
@@ -161,28 +101,29 @@ void BrowserController::handleWebClientMsg(int sockfd, TaskUtilities::MsgItem& i
 {
     std::string message(item.data, item.len);  // local, safe
 
-    if (message.find("start_generator") != std::string::npos) {
+    if ((message.find("start_generator") != std::string::npos) ||
+        (message.find("stop_generator") != std::string::npos))
+        {
         //ESP_LOGW(TAG, "handleWebClientMsg:start_generator command received: Len %d", (int)message.size());
 
-        item.toTask = TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK;
-
         if(DeviceConfig::instance().isMasterDevice()) {
+            item.toTask = TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK;
             TaskUtilities::sendToQueue(TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK, &item, 0);
         }
         else if(DeviceConfig::instance().isSlaveDevice()) {
+            item.toTask = TaskUtilities::TaskNames::R33_SLAVE_CONTROLLER_MESSAGE_TASK;
             TaskUtilities::sendToQueue(TaskUtilities::TaskNames::R33_SLAVE_CONTROLLER_MESSAGE_TASK, &item, 0);
+        }
+        else
+        {
+            debugServices::postDebug("Received start/stop generator command, but device is neither master nor slave");
         }
         return;
     }
-    if (message.find("stop_generator") != std::string::npos) {
-        //ESP_LOGW(TAG, "handleWebClientMsg:stop_generator command received: Len %d", (int)message.size());
 
-        item.toTask = TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK;
-
-        TaskUtilities::sendToQueue(TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK, &item, 0);
-        return;
-    }
-    if (message.find("toggle_gen_valve") != std::string::npos) {
+    if ((message.find("toggle_gen_valve") != std::string::npos) ||
+        (message.find("toggle_ac_valve") != std::string::npos))
+    {
         //ESP_LOGW(TAG, "handleWebClientMsg:toggle_gen_valve command received: Len %d", (int)message.size());
 
         item.toTask = TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK;
@@ -190,14 +131,7 @@ void BrowserController::handleWebClientMsg(int sockfd, TaskUtilities::MsgItem& i
         TaskUtilities::sendToQueue(TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK, &item, 0);
         return;
     }    
-    if (message.find("toggle_ac_valve") != std::string::npos) {
-        //ESP_LOGW(TAG, "handleWebClientMsg:toggle_ac_valve command received: Len %d", (int)message.size());
-
-        item.toTask = TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK;
-        
-        TaskUtilities::sendToQueue(TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK, &item, 0);
-        return;
-    }    
+   
     if (message.find("save_STA_wifi") != std::string::npos) {
         std::string ssid = Utilities::extractJsonField(message, "ssid");
         std::string password = Utilities::extractJsonField(message, "password");
@@ -278,14 +212,25 @@ void BrowserController::handleWebClientMsg(int sockfd, TaskUtilities::MsgItem& i
         return;
     }
     if (message.find("save_ota_url") != std::string::npos) {
-        std::string updateServerUrl = Utilities::extractJsonField(message, "url");
-        if (!updateServerUrl.empty()) {
-            NvsMgr::instance().saveUpdateServerUrl(updateServerUrl);
+        std::string updateServerHost = Utilities::extractJsonField(message, "host");
+        std::string updateServerPort = Utilities::extractJsonField(message, "port");
+        if (!updateServerHost.empty() && !updateServerPort.empty()) {
+            NvsMgr::instance().saveUpdateServer(updateServerHost, updateServerPort);
             debugServices::postDebug("Update server URL saved");
             WsServer::instance().sendTextMsg(sockfd, "{\"type\":\"ota_url_saved\"}");
         }
         return;
     }
+    if ((message.find("get_ota_url") != std::string::npos) ||
+        (message.find("get_ota_server_status") != std::string::npos) ||
+        (message.find("get_current_version") != std::string::npos) ||
+        (message.find("check_updates") != std::string::npos) ||
+        (message.find("start_update") != std::string::npos)) 
+    {
+        TaskUtilities::sendToQueue(TaskUtilities::TaskNames::OTA_MANAGER_MESSAGE_TASK, &item, 0);
+        return;
+    }
+    #if 0
     if (message.find("get_ota_url") != std::string::npos) {
         std::string savedUrl = NvsMgr::instance().getUpdateServerUrl();
         std::string json = "{\"type\":\"ota_url_loaded\",\"url\":\"" + savedUrl + "\"}";
@@ -326,7 +271,7 @@ void BrowserController::handleWebClientMsg(int sockfd, TaskUtilities::MsgItem& i
         }
         return;
     }
-
+#endif
     ESP_LOGW(TAG, "Received message from web browser, ignoring: %s", message.c_str());
 }
 

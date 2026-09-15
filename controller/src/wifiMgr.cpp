@@ -21,6 +21,7 @@ static const char* NVS_NAMESPACE = "wifi_cfg";
 static WifiMgr* s_instance = nullptr;
 static bool mdnsStartedSta = false;
 static bool mdnsStartedAp = false;
+static bool mdnsInitialized = false;
 static bool isMaster_ = false;
 TaskHandle_t WifiMgr::wifiRetryTaskHandle = nullptr;
 //static NvsMgr& nvsMgr = NvsMgr::instance();
@@ -316,6 +317,15 @@ void WifiMgr::startMdns()
 
 void WifiMgr::configAndStartMdns()
 {
+    // mdns_init()/hostname/service_add must only run once — ESP-IDF's mdns
+    // component automatically re-announces on IP change, and re-registering
+    // on every STA reconnect left the responder in an inconsistent state
+    // that answered queries unreliably.
+    if (mdnsInitialized) {
+        return;
+    }
+    mdnsInitialized = true;
+
         // how to store and retrive the hostname from nvs
     // nvs_set_str(handle, "mdns_host", "r33-esp32-slave");
     // char hostname[32];

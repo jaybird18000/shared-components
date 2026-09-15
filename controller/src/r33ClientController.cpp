@@ -167,19 +167,13 @@ void R33ClientController::socketTaskLoop() {
                         ESP_LOGI(TAG, "Master discovered: %s:%d",
                                 masterHost.c_str(), masterPort);
 
-                        bool ping_status = Utilities::ping_addr(masterIp.c_str());
-                        ping_status = Utilities::ping_addr(masterIp.c_str());
-                        if(!ping_status)
-                        {
-                            ESP_LOGW(TAG, "Ping to master %s failed, attempting to reset network stack", masterIp.c_str());
-                            ESP_LOGW(TAG, "Network stack stuck — resetting netif");
-                            WifiMgr::instance().restartWifi();  // this take a while
-                            ping_status = Utilities::ping_addr(masterIp.c_str());
-                        }
-                        vTaskDelay(pdMS_TO_TICKS(2000));  // give tmdns time to settle
-                        // ⭐ Wait for master’s port 80 to be open
+                        // ⭐ Wait for master's port 80 to be open — the real reachability test.
+                        // (Previously a single-packet ICMP ping gated a full restartWifi() here;
+                        // normal Wi-Fi packet loss made that ping unreliable and the resulting
+                        // restart disconnected this device's own STA, causing the very
+                        // failure it was meant to detect.)
                         bool ready = false;
-                        for (int i = 0; i < 5; i++) {   // 20 × 250ms = 5 seconds max
+                        for (int i = 0; i < 5; i++) {   // 5 x 250ms = 1.25s per attempt window
                             if (isPortOpen(masterIp, masterPort, 1500)) {
                                 ready = true;
                                 break;
@@ -241,7 +235,7 @@ void R33ClientController::messageTaskLoop() {
                 case TaskUtilities::MsgTypes::DEBUG:
                 {
                     item.fromTask = TaskUtilities::TaskNames::R33_CLIENT_CONTROLLER_MESSAGE_TASK;
-                    item.toTask = TaskUtilities::TaskNames::BROWSER_CONTROLLER_MESSAGE_TASK;
+                    item.toTask = TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK;
                     //ESP_LOGW(TAG, "Processing DEBUG message: %s", item.data);
                     auto bytes = item.serialize();
                     item.len = bytes.size();
@@ -285,7 +279,7 @@ void R33ClientController::messageTaskLoop() {
                         {
                             ESP_LOGW(TAG, "Received DATA message not intended for R33_SLAVE_CONTROLLER_MESSAGE_TASK: %s", item.data);
                         }
-                        item.fromTask = TaskUtilities::TaskNames::R33_CLIENT_CONTROLLER_MESSAGE_TASK;
+//                        item.fromTask = TaskUtilities::TaskNames::R33_CLIENT_CONTROLLER_MESSAGE_TASK;
                         item.toTask = TaskUtilities::TaskNames::R33_SLAVE_CONTROLLER_MESSAGE_TASK;
                         TaskUtilities::sendToQueue(TaskUtilities::TaskNames::R33_SLAVE_CONTROLLER_MESSAGE_TASK, &item, portMAX_DELAY);
                         ESP_LOGW(TAG, "Received JSON message send to R33_SLAVE_CONTROLLER_TASK: %s", item.data);
@@ -296,7 +290,7 @@ void R33ClientController::messageTaskLoop() {
                         {
                             ESP_LOGW(TAG, "Received DATA message not intended for R33_SUNSHADE_CONTROLLER_MESSAGE_TASK: %s", item.data);
                         }
-                        item.fromTask = TaskUtilities::TaskNames::R33_CLIENT_CONTROLLER_MESSAGE_TASK;
+//                        item.fromTask = TaskUtilities::TaskNames::R33_CLIENT_CONTROLLER_MESSAGE_TASK;
                         item.toTask = TaskUtilities::TaskNames::R33_SUNSHADE_CONTROLLER_MESSAGE_TASK;
                         TaskUtilities::sendToQueue(TaskUtilities::TaskNames::R33_SUNSHADE_CONTROLLER_MESSAGE_TASK, &item, portMAX_DELAY);
                         ESP_LOGW(TAG, "Received JSON message send to R33_SUNSHADE_CONTROLLER_TASK: %s", item.data);

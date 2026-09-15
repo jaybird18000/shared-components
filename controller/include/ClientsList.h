@@ -16,6 +16,7 @@ public:
     bool addClient(int sockfd, const ClientInfo& info);
     bool removeClient(int sockfd);
     ClientInfo* findClient(int sockfd);
+    bool checkForNewClient(int sockfd, ClientInfo::ClientType type);
 
     void updateLastSeen(int sockfd);
     void updateLastPongRxTime(int sockfd);

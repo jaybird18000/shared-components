@@ -12,7 +12,8 @@ class ClientInfo {
             BROWSER,
             SLAVE,
             MASTER,
-            SUNSHADE
+            SUNSHADE,
+            WSCLIENT
         };
 
         // ---- STATIC HELPER TO CONVERT ENUM TO STRING ----
@@ -22,6 +23,7 @@ class ClientInfo {
                 case ClientType::SLAVE:   return "slave";
                 case ClientType::MASTER:  return "master";
                 case ClientType::SUNSHADE: return "sunshade";
+                case ClientType::WSCLIENT: return "wsclient";
                 default:                  return "unknown";
             }
         }

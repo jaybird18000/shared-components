@@ -1,9 +1,17 @@
 #include "OtaManager.h"
+#include "ClientsList.h"
+#include "wsServer.h"
+#include "DebugServices.h"
 #include "nvsMgr.h"
 #include "version.h"
 #include "DeviceConfig.h"
+#include "TaskUtilities.h"
+#include "Utilities.h"
+#include "wifiMgr.h"
 #include <esp_ota_ops.h>
 #include <esp_http_client.h>
+#include <mdns.h>
+#include <lwip/inet.h>
 //#include <app_update.h>
 #include <ArduinoJson.h>
 #include <cstring>
@@ -11,8 +19,17 @@
 
 static const char* TAG = "OTA_MANAGER";
 
+TaskHandle_t OtaManager::otaTaskHandle = nullptr;
+TaskHandle_t OtaManager::healthTaskHandle = nullptr;
+OtaManager& OtaManager::instance()
+{
+    static OtaManager inst;
+    return inst;
+}
 OtaManager::OtaManager() 
-    : _isUpdating(false) {
+    : _isUpdating(false) 
+{
+
 }
 
 OtaManager::~OtaManager() {
@@ -22,6 +39,229 @@ void OtaManager::init(const std::string& currentVersion) {
   _currentVersion = currentVersion;
   _availableVersion = currentVersion;
   ESP_LOGI(TAG, "OTA Manager initialized with version: %s", _currentVersion.c_str());
+}
+
+void OtaManager::begin()
+{
+    TaskUtilities::createTaskWithQueue(TaskUtilities::TaskNames::OTA_MANAGER_MESSAGE_TASK, messageTaskEntry, sizeof(TaskUtilities::MsgItem));
+    if (healthTaskHandle == nullptr) {
+        xTaskCreate(healthTaskEntry, "OtaHealthTask", 4096, nullptr, 4, &healthTaskHandle);
+    }
+}
+
+void OtaManager::messageTaskEntry(void *param)
+{
+    OtaManager::messageTaskLoop();
+}
+
+void OtaManager::messageTaskLoop()
+{
+    ESP_LOGI(TAG, "Starting OTA Manager message task loop");
+    while (true) 
+    {
+        TaskUtilities::MsgItem item;
+
+        if (TaskUtilities::waitOnQueue(TaskUtilities::TaskNames::OTA_MANAGER_MESSAGE_TASK, &item, portMAX_DELAY) == pdTRUE)
+        {
+            ESP_LOGI(TAG, "Processing msg from %s: %s",
+                      TaskUtilities::taskNameToString(item.fromTask), std::string(item.data, item.len).c_str());
+            if(item.fromBrowser)
+            {
+                ClientsList::instance().updateLastSeen(item.sockfd);
+                const char* role = item.fromBrowser ? "BROWSER" : "SLAVE";
+                //ESP_LOGI(TAG, "Msg rcvd fd=%d from %s msg %s", item.sockfd, role, payload.c_str());
+                OtaManager::handleBrowserClientMsg(item.sockfd, item);
+
+            }
+            else
+            {
+                const char* role = item.fromBrowser ? "BROWSER" : "SLAVE";
+                //ESP_LOGI(TAG, "Msg rcvd fd=%d from %s msg %s", item.sockfd, role, payload.c_str());
+                OtaManager::handleSlaveClientMsg(item.sockfd, item);
+            }
+
+        }
+    }
+}
+void OtaManager::handleBrowserClientMsg(int sockfd, TaskUtilities::MsgItem& item)
+{
+    std::string message(item.data, item.len);  // local, safe
+
+    if (message.find("get_ota_server_status") != std::string::npos) {
+        if (healthTaskHandle != nullptr) {
+            xTaskNotifyGive(healthTaskHandle);
+        }
+        return;
+    }
+    if (message.find("get_ota_url") != std::string::npos) {
+       std::string savedHost = NvsMgr::instance().getUpdateServerHost();
+        std::string savedPort = NvsMgr::instance().getUpdateServerPort();
+        std::string json = "{\"type\":\"ota_url_loaded\",\"host\":\"" + savedHost + "\",\"port\":\"" + savedPort + "\"}";
+        WsServer::instance().sendTextMsg(sockfd, json);
+        return;
+    }
+    if (message.find("get_current_version") != std::string::npos) {
+        std::string currentVersion = getFirmwareVersion();
+        std::string json = "{\"type\":\"current_version_info\",\"version\":\"" + currentVersion + "\"}";
+        WsServer::instance().sendTextMsg(sockfd, json);
+        return;
+    }
+    if (message.find("check_updates") != std::string::npos) {
+        std::string updateServerUrl = Utilities::extractJsonField(message, "update_server_url");
+        if (!updateServerUrl.empty()) {
+            debugServices::postDebug("Checking for firmware updates...");
+            
+            // Create OTA task with its own stack
+            OtaTaskParams* params = new OtaTaskParams();
+            params->updateServerUrl = updateServerUrl;
+            params->operation = 0;  // check_updates
+            
+            xTaskCreate(otaTaskFunction, "OtaTask", 4096, params, 5, &otaTaskHandle);
+        }
+        return;
+    }
+    if (message.find("start_update") != std::string::npos) {
+        std::string updateServerUrl = Utilities::extractJsonField(message, "update_server_url");
+        if (!updateServerUrl.empty()) {
+            debugServices::postDebug("Starting firmware update...");
+            
+            // Create OTA task with its own stack
+            OtaTaskParams* params = new OtaTaskParams();
+            params->updateServerUrl = updateServerUrl;
+            params->operation = 1;  // start_update
+            
+            xTaskCreate(otaTaskFunction, "OtaUpdateTask", 4096, params, 5, &otaTaskHandle);
+        }
+        return;
+    }  
+}
+void OtaManager::handleSlaveClientMsg(int sockfd, TaskUtilities::MsgItem& item)
+{
+    ESP_LOGW(TAG, "HandleSlaveClientCalled, but no processing done");
+}
+
+void OtaManager::healthTaskEntry(void* param)
+{
+    OtaManager::healthTaskLoop();
+}
+
+void OtaManager::healthTaskLoop()
+{
+    ESP_LOGI(TAG, "Starting OTA server health check task");
+    while (true)
+    {
+        // Wakes on a get_ota_server_status notification or every period
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HEALTH_CHECK_PERIOD_MS));
+        ESP_LOGI(TAG, "Checking OTA server health...");
+        checkServerHealth();
+        ESP_LOGI(TAG, "OTA server health check complete");
+    }
+}
+
+void OtaManager::checkServerHealth()
+{
+    // The Python server handles one request at a time; do not interrupt a download
+    if (OtaManager::instance()._isUpdating) {
+        return;
+    }
+
+    bool online = false;
+    std::string host = NvsMgr::instance().getUpdateServerHost();
+    std::string port = NvsMgr::instance().getUpdateServerPort();
+
+    if (!host.empty() && !port.empty() && WifiMgr::instance().isSTAConnected()) {
+        std::string baseUrl = "http://" + host + ":" + port;
+        std::string healthUrl = OtaManager::instance().resolveUpdateServerUrl(baseUrl);
+        if (!healthUrl.empty()) {
+          healthUrl += "/health?id=";
+          switch (DeviceConfig::instance().getDeviceRole()) {
+            case DeviceRole::MASTER:
+              healthUrl += "r33-master-01";
+              break;
+            case DeviceRole::SLAVE:
+              healthUrl += "r33-slave-01";
+              break;
+            case DeviceRole::SUNSHADE:
+              healthUrl += "r33-sunshade-01";
+              break;
+          }
+          healthUrl += "&version=" + getFirmwareVersion();
+          healthUrl += "&health_timeout_ms=" +
+                       std::to_string(HEALTH_CHECK_PERIOD_MS * 2 + 3000);
+
+            esp_http_client_config_t config = {};
+            config.url = healthUrl.c_str();
+            config.method = HTTP_METHOD_GET;
+            config.timeout_ms = 2500;
+
+            esp_http_client_handle_t client = esp_http_client_init(&config);
+            if (client) {
+                if (esp_http_client_open(client, 0) == ESP_OK) {
+                    esp_http_client_fetch_headers(client);
+                    online = esp_http_client_get_status_code(client) == 200;
+                }
+                esp_http_client_close(client);
+                esp_http_client_cleanup(client);
+            }
+        }
+    }
+
+    std::string json = std::string("{\"type\":\"ota_server_status\",\"online\":") + (online ? "true" : "false") + "}";
+    WsServer::instance().broadcastText(json, WsServer::AudienceType::BROWSERS);
+}
+
+// Task function for OTA operations (runs on separate stack)
+void OtaManager::otaTaskFunction(void* pvParameters) {
+    OtaTaskParams* params = (OtaTaskParams*)pvParameters;
+    
+    ESP_LOGI(TAG, "OTA task started: operation=%d, url=%s", params->operation, params->updateServerUrl.c_str());
+    
+    if (params->operation == 0) {
+        // Check for updates
+        std::string currentVersion = getFirmwareVersion();
+        OtaManager::instance().setStatusCallback([currentVersion](const std::string& version, bool success) {
+            if (success) {
+                std::string json = "{\"type\":\"version_info\",\"current_version\":\"" + currentVersion + "\",\"available_version\":\"" + version + "\"}";
+                WsServer::instance().broadcastText(json, WsServer::AudienceType::BROWSERS);
+                debugServices::postDebug("Available version: " + version);
+            } else {
+                debugServices::postDebug("Update check failed");
+            }
+        });
+        
+        OtaManager::instance().init(currentVersion);
+        OtaManager::instance().checkForUpdates(params->updateServerUrl);
+    } 
+    else if (params->operation == 1) {
+        // Start update - track progress to avoid debug spam
+        int lastPostedProgress = 0;
+        OtaManager::instance().setProgressCallback([&lastPostedProgress](int progress) {
+            std::string json = "{\"type\":\"update_progress\",\"progress\":" + std::to_string(progress) + "}";
+            WsServer::instance().broadcastText(json, WsServer::AudienceType::BROWSERS);
+            
+            // Only post debug for every 20% increase or at 100%
+            if (progress >= lastPostedProgress + 20 || progress == 100) {
+                lastPostedProgress = progress;
+                debugServices::postDebug("Update progress: " + std::to_string(progress) + "%");
+            }
+        });
+        
+        OtaManager::instance().setStatusCallback([](const std::string& message, bool success) {
+            std::string json = "{\"type\":\"update_status\",\"status\":\"" + std::string(success ? "success" : "error") + "\",\"message\":\"" + message + "\"}";
+            WsServer::instance().broadcastText(json, WsServer::AudienceType::BROWSERS);
+            if (success) {
+                debugServices::postDebug("✓ " + message);
+            } else {
+                debugServices::postDebug("✗ " + message);
+            }
+        });
+        
+        OtaManager::instance().init(getFirmwareVersion());
+        OtaManager::instance().startUpdate(params->updateServerUrl);
+    }
+    
+    delete params;
+    vTaskDelete(NULL);
 }
 
 std::string OtaManager::getCurrentVersion() const {
@@ -53,15 +293,185 @@ void OtaManager::checkForUpdates(const std::string& updateServerUrl) {
   }
 
   // Save URL to NVS for later use
-  NvsMgr::instance().saveUpdateServerUrl(updateServerUrl);
-
   ESP_LOGI(TAG, "Checking for updates from: %s", updateServerUrl.c_str());
   fetchVersionInfo(updateServerUrl);
 }
 
+#if 0
+std::string OtaManager::resolveUpdateServerUrl(const std::string& updateServerUrl) {
+  ESP_LOGI(TAG, "Resolving update server URL: %s", updateServerUrl.c_str());
+  const std::size_t schemeEnd = updateServerUrl.find("://");
+  if (schemeEnd == std::string::npos) {
+    return updateServerUrl;
+  }
+
+  const std::size_t hostStart = schemeEnd + 3;
+  const std::size_t hostEnd = updateServerUrl.find_first_of("/?#", hostStart);
+  const std::size_t authorityEnd = hostEnd == std::string::npos ? updateServerUrl.size() : hostEnd;
+  std::string hostname = updateServerUrl.substr(hostStart, authorityEnd - hostStart);
+
+  const std::size_t portSeparator = hostname.rfind(':');
+  if (portSeparator != std::string::npos) {
+    hostname.erase(portSeparator);
+  }
+  if (!hostname.empty() && hostname.back() == '.') {
+    hostname.pop_back();
+  }
+
+  if (hostname != "r33-ota.local") {
+    return updateServerUrl;
+  }
+
+  mdns_result_t* results = nullptr;
+  uint32_t queryTimeout = 1000;
+  esp_err_t err = mdns_query_ptr("_http", "_tcp", queryTimeout, 20, &results);
+  if (err != ESP_OK || results == nullptr) {
+    ESP_LOGE(TAG, "Failed to discover OTA server via mDNS: %s", esp_err_to_name(err));
+    return {};
+  }
+
+  char addressBuffer[16] = {};
+  bool foundAddress = false;
+  for (mdns_result_t* result = results; result != nullptr; result = result->next) {
+    const char* resultHostname = result->hostname != nullptr ? result->hostname : "<none>";
+    const char* addressType = "none";
+    const char* address = "<none>";
+    if (result->addr != nullptr) {
+      addressType = result->addr->addr.type == ESP_IPADDR_TYPE_V4 ? "IPv4" : "IPv6";
+      if (result->addr->addr.type == ESP_IPADDR_TYPE_V4) {
+        inet_ntoa_r(result->addr->addr.u_addr.ip4, addressBuffer, sizeof(addressBuffer));
+        address = addressBuffer;
+      }
+    }
+    ESP_LOGI(TAG, "mDNS result: hostname=%s port=%u address_type=%s address=%s",
+             resultHostname, result->port, addressType, address);
+
+    if (result->hostname == nullptr || strcmp(result->hostname, "r33-ota") != 0 ||
+        result->addr == nullptr || result->addr->addr.type != ESP_IPADDR_TYPE_V4) {
+      continue;
+    }
+
+    inet_ntoa_r(result->addr->addr.u_addr.ip4, addressBuffer, sizeof(addressBuffer));
+    foundAddress = true;
+    break;
+  }
+  mdns_query_results_free(results);
+
+  if (!foundAddress) {
+    ESP_LOGE(TAG, "mDNS did not return an IPv4 address for r33-ota.local");
+    return {};
+  }
+
+  const std::size_t hostnamePortSeparator = updateServerUrl.find(':', hostStart);
+  const std::size_t replacementEnd = hostnamePortSeparator != std::string::npos &&
+                                             hostnamePortSeparator < authorityEnd
+                                         ? hostnamePortSeparator
+                                         : authorityEnd;
+
+  std::string resolvedUrl = updateServerUrl;
+  resolvedUrl.replace(hostStart, replacementEnd - hostStart, addressBuffer);
+  ESP_LOGI(TAG, "Resolved OTA server %s to %s", updateServerUrl.c_str(), resolvedUrl.c_str());
+  return resolvedUrl;
+}
+#endif
+
+std::string OtaManager::resolveUpdateServerUrl(const std::string& updateServerUrl) {
+  ESP_LOGI(TAG, "Resolving update server URL: %s", updateServerUrl.c_str());
+  const std::size_t schemeEnd = updateServerUrl.find("://");
+  if (schemeEnd == std::string::npos) {
+    return updateServerUrl;
+  }
+
+  const std::size_t hostStart = schemeEnd + 3;
+  const std::size_t hostEnd = updateServerUrl.find_first_of("/?#", hostStart);
+  const std::size_t authorityEnd = hostEnd == std::string::npos ? updateServerUrl.size() : hostEnd;
+  std::string hostname = updateServerUrl.substr(hostStart, authorityEnd - hostStart);
+
+  const std::size_t portSeparator = hostname.rfind(':');
+  if (portSeparator != std::string::npos) {
+    hostname.erase(portSeparator);
+  }
+  if (!hostname.empty() && hostname.back() == '.') {
+    hostname.pop_back();
+  }
+
+  if (hostname != "r33-ota.local") {
+    return updateServerUrl;
+  }
+
+  char addressBuffer[16] = {};
+  bool foundAddress = false;
+  constexpr uint32_t queryTimeout = 1000;
+
+  for (int attempt = 1; attempt <= 2 && !foundAddress; ++attempt) {
+    mdns_result_t* results = nullptr;
+    ESP_LOGI(TAG, "mDNS query attempt %d of 2 for r33-ota.local", attempt);
+    esp_err_t err = mdns_query_ptr("_http", "_tcp", queryTimeout, 20, &results);
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "mDNS query attempt %d failed: %s", attempt, esp_err_to_name(err));
+      continue;
+    }
+
+    if (results == nullptr) {
+      ESP_LOGW(TAG, "mDNS query attempt %d returned no HTTP services", attempt);
+      continue;
+    }
+
+    for (mdns_result_t* result = results; result != nullptr; result = result->next) {
+      const char* resultHostname = result->hostname != nullptr ? result->hostname : "<none>";
+      const char* addressType = "none";
+      const char* address = "<none>";
+      if (result->addr != nullptr) {
+        addressType = result->addr->addr.type == ESP_IPADDR_TYPE_V4 ? "IPv4" : "IPv6";
+        if (result->addr->addr.type == ESP_IPADDR_TYPE_V4) {
+          inet_ntoa_r(result->addr->addr.u_addr.ip4, addressBuffer, sizeof(addressBuffer));
+          address = addressBuffer;
+        }
+      }
+      ESP_LOGI(TAG, "mDNS result: hostname=%s port=%u address_type=%s address=%s",
+               resultHostname, result->port, addressType, address);
+
+      if (result->hostname != nullptr && strcmp(result->hostname, "r33-ota") == 0 &&
+          result->addr != nullptr && result->addr->addr.type == ESP_IPADDR_TYPE_V4) {
+        foundAddress = true;
+        break;
+      }
+    }
+    mdns_query_results_free(results);
+
+    if (!foundAddress && attempt == 1) {
+      ESP_LOGW(TAG, "r33-ota.local not found on first mDNS query; retrying");
+    }
+  }
+
+  if (!foundAddress) {
+    ESP_LOGE(TAG, "mDNS did not return an IPv4 address for r33-ota.local after two queries");
+    return {};
+  }
+
+  const std::size_t hostnamePortSeparator = updateServerUrl.find(':', hostStart);
+  const std::size_t replacementEnd = hostnamePortSeparator != std::string::npos &&
+                                             hostnamePortSeparator < authorityEnd
+                                         ? hostnamePortSeparator
+                                         : authorityEnd;
+
+  std::string resolvedUrl = updateServerUrl;
+  resolvedUrl.replace(hostStart, replacementEnd - hostStart, addressBuffer);
+  ESP_LOGI(TAG, "Resolved OTA server %s to %s", updateServerUrl.c_str(), resolvedUrl.c_str());
+  return resolvedUrl;
+}
+
 void OtaManager::fetchVersionInfo(const std::string& updateServerUrl) {
+  std::string resolvedUrl = resolveUpdateServerUrl(updateServerUrl);
+  if (resolvedUrl.empty()) {
+    if (_statusCallback) {
+      _statusCallback("Could not resolve OTA server via mDNS", false);
+    }
+    return;
+  }
+
   // Build metadata URL (append /metadata.json if not already there)
-  std::string metadataUrl = updateServerUrl;
+  std::string metadataUrl = resolvedUrl;
   if (metadataUrl.back() != '/') {
     metadataUrl += "/";
   }
@@ -197,10 +607,18 @@ void OtaManager::startUpdate(const std::string& updateServerUrl) {
     return;
   }
 
+  std::string resolvedUrl = resolveUpdateServerUrl(updateServerUrl);
+  if (resolvedUrl.empty()) {
+    if (_statusCallback) {
+      _statusCallback("Could not resolve OTA server via mDNS", false);
+    }
+    return;
+  }
+
   _isUpdating = true;
 
   // Build firmware URL dynamically based on device role
-  std::string firmwareUrl = updateServerUrl;
+  std::string firmwareUrl = resolvedUrl;
   if (firmwareUrl.back() != '/') {
     firmwareUrl += "/";
   }
@@ -358,3 +776,5 @@ void OtaManager::downloadAndInstallFirmware(const std::string& firmwareUrl) {
   vTaskDelay(pdMS_TO_TICKS(2000));
   esp_restart();
 }
+
+

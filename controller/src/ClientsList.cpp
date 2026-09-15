@@ -1,8 +1,10 @@
 #include "ClientsList.h"
 #include "ConsoleApp.h"
+#include "DebugServices.h"
 #include "esp_log.h"
 #include <chrono>
 
+static const char* TAG = "ClientsList";
 ClientsList::ClientsList() {
     mtx_ = xSemaphoreCreateRecursiveMutex();
 }
@@ -31,6 +33,23 @@ ClientInfo* ClientsList::findClient(int sockfd) {
     auto it = clients_.find(sockfd);
     ClientInfo* result = (it != clients_.end()) ? &it->second : nullptr;
     xSemaphoreGiveRecursive(mtx_);
+    return result;
+}
+
+bool ClientsList::checkForNewClient(int sockfd, ClientInfo::ClientType type)
+{
+    bool result = false;
+
+    if (ClientsList::instance().findClient(sockfd) == nullptr)
+    {
+        const char* role = ClientInfo::typeToString(type);
+        ESP_LOGI(TAG, "Adding %s client %d", role, sockfd);
+        debugServices::postDebug("Adding %s client %d", role, sockfd);
+
+        ClientInfo info(sockfd, role, type);
+        ClientsList::instance().addClient(sockfd, info);
+        result = true;
+    }
     return result;
 }
 

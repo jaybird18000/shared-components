@@ -334,30 +334,55 @@ void NvsMgr::dumpNVS()
     }
 }
 
-void NvsMgr::saveUpdateServerUrl(const std::string& url) {
+void NvsMgr::saveUpdateServer(const std::string& host, const std::string& port) {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err == ESP_OK) {
-        err = nvs_set_str(handle, "ota_srv_url", url.c_str());
+        err = nvs_set_str(handle, "ota_srv_host", host.c_str());
+        if (err == ESP_OK) {
+            err = nvs_set_str(handle, "ota_srv_port", port.c_str());
+        }
         if (err == ESP_OK) {
             err = nvs_commit(handle);
-            ESP_LOGI(TAG, "Update server URL saved: %s", url.c_str());
+            ESP_LOGI(TAG, "Update server saved: %s:%s", host.c_str(), port.c_str());
         } else {
-            ESP_LOGE(TAG, "Failed to save update server URL: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "Failed to save update server: %s", esp_err_to_name(err));
         }
         nvs_close(handle);
     }
 }
 
-std::string NvsMgr::getUpdateServerUrl() const {
+std::string NvsMgr::getUpdateServerHost() const {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err == ESP_OK) {
         size_t required_size = 0;
-        err = nvs_get_str(handle, "ota_srv_url", NULL, &required_size);
+        err = nvs_get_str(handle, "ota_srv_host", NULL, &required_size);
         if (err == ESP_OK && required_size > 0) {
             char* buffer = new char[required_size];
-            err = nvs_get_str(handle, "ota_srv_url", buffer, &required_size);
+            err = nvs_get_str(handle, "ota_srv_host", buffer, &required_size);
+            if (err == ESP_OK) {
+                std::string result(buffer);
+                delete[] buffer;
+                nvs_close(handle);
+                return result;
+            }
+            delete[] buffer;
+        }
+        nvs_close(handle);
+    }
+    return "";
+}
+
+std::string NvsMgr::getUpdateServerPort() const {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err == ESP_OK) {
+        size_t required_size = 0;
+        err = nvs_get_str(handle, "ota_srv_port", NULL, &required_size);
+        if (err == ESP_OK && required_size > 0) {
+            char* buffer = new char[required_size];
+            err = nvs_get_str(handle, "ota_srv_port", buffer, &required_size);
             if (err == ESP_OK) {
                 std::string result(buffer);
                 delete[] buffer;

@@ -11,7 +11,7 @@ public:
 private:
     static void r33MasterControllerTask(void* param);
 
-    static void handleWebClientMsg(int sockfd, const std::string &message);
-    static void handleSlaveClientMsg(int sockfd, const std::string &message);
+    static void handleBrowserClientMsg(int sockfd, const std::string &message);
+    static void handleWebSrvClientMsg(int sockfd, const std::string &message);
 
 };
