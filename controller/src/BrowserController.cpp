@@ -12,13 +12,17 @@
 #include "Valves.h"
 #include "version.h"
 #include "OtaManager.h"
+#include "MdnsMgr.h"
 #include "DeviceConfig.h"
+#include "statusDb.h"
 #include "esp_log.h"
 #include <ArduinoJson.h>
+#include <algorithm>
+#include <cctype>
 
 
 static constexpr const char* TAG = "BrowserController";
-static ValvesController valves;
+static auto& valves = ValvesController::instance();
 static GenRelay genRelay;
 
 BrowserController& BrowserController::instance() {
@@ -121,10 +125,12 @@ void BrowserController::handleWebClientMsg(int sockfd, TaskUtilities::MsgItem& i
         return;
     }
 
-    if ((message.find("toggle_gen_valve") != std::string::npos) ||
-        (message.find("toggle_ac_valve") != std::string::npos))
+    if ((message.find("open_gen_valve") != std::string::npos) ||
+        (message.find("close_gen_valve") != std::string::npos) ||
+        (message.find("open_ac_valve") != std::string::npos) ||
+        (message.find("close_ac_valve") != std::string::npos))
     {
-        //ESP_LOGW(TAG, "handleWebClientMsg:toggle_gen_valve command received: Len %d", (int)message.size());
+        //ESP_LOGW(TAG, "handleWebClientMsg:valve command received: Len %d", (int)message.size());
 
         item.toTask = TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK;
 
@@ -211,10 +217,13 @@ void BrowserController::handleWebClientMsg(int sockfd, TaskUtilities::MsgItem& i
         debugServices::sendDebugMsgsSince(webClientLastReceivedDebugMsgCtr, sockfd);
         return;
     }
-    if (message.find("save_ota_url") != std::string::npos) {
+    if (message.find("save_ota_url") != std::string::npos) 
+    {
         std::string updateServerHost = Utilities::extractJsonField(message, "host");
         std::string updateServerPort = Utilities::extractJsonField(message, "port");
-        if (!updateServerHost.empty() && !updateServerPort.empty()) {
+        ESP_LOGI(TAG, "Received save_ota_url with host=%s, port=%s", updateServerHost.c_str(), updateServerPort.c_str());
+        if (!updateServerHost.empty() && !updateServerPort.empty()) 
+        {
             NvsMgr::instance().saveUpdateServer(updateServerHost, updateServerPort);
             debugServices::postDebug("Update server URL saved");
             WsServer::instance().sendTextMsg(sockfd, "{\"type\":\"ota_url_saved\"}");
@@ -294,7 +303,7 @@ void BrowserController::handleSlaveClientMsg(int sockfd, TaskUtilities::MsgItem&
         }
         else
         {
-            if (DebugControl::enabled(Item::BROWSER_CONTROLLER)) {
+            if (DebugControl::enabled(DebugItem::BROWSER_CONTROLLER)) {
                 ESP_LOGW(TAG, "Received message from slave, ignoring: %s", message.c_str());
             }
         }
@@ -316,13 +325,37 @@ void BrowserController::broadcastStatus()
     // std::string genState = genRelay.stateText();
     // slave sent the ac info via a message and the SharedDataStore is updated with the latest values
     SharedAcData_t ac = SharedDataStore::get();
-    float voltage = ac.voltage;
-    float current = ac.current;
-    float frequency = ac.frequency;
-    std::string genState = ac.genStatus;
+//    float voltage = ac.voltage;
+//    float current = ac.current;
+//    float frequency = ac.frequency;
+//    std::string genState = ac.genStatus;
+//    std::string genValve = valves.generatorValve().statusText();
+//    std::string acValve  = valves.acValve().statusText();
 
-    std::string genValve = valves.generatorValve().statusText();
-    std::string acValve  = valves.acValve().statusText();
+    float voltage = StatusDb::instance().getGeneratorVoltage();
+    float current = StatusDb::instance().getGeneratorCurrent();
+    float frequency = StatusDb::instance().getGeneratorFrequency();
+    std::string genState = GenRelay::genStateToString(StatusDb::instance().getGeneratorState());
+    std::string genValve = Valve::statusText(StatusDb::instance().getGeneratorValveState());
+    std::string acValve  = Valve::statusText(StatusDb::instance().getACValveState());
+
+    std::string testModeStatus = "";
+    if (StatusDb::instance().getMasterTestMode())
+    {
+        testModeStatus += "Master";
+    }
+    if (StatusDb::instance().getSlaveTestMode())
+    {
+        testModeStatus += " Slave";
+    }
+    if (StatusDb::instance().getSunShadeTestMode())
+    {
+        testModeStatus += " SunShade";
+    }
+    if(testModeStatus.empty())
+    {
+        testModeStatus = "None";
+    }
 
     bool send = false;
 
@@ -386,14 +419,74 @@ void BrowserController::broadcastStatus()
       }
     });
     const char* masterConnection = masterConnected ? "connected" : "disconnected";
+    std::string serverConnection;
+    if (masterConnected) {
+        serverConnection = "Master";
+    }
+    if (OtaManager::instance().isFirmwareServerOnline()) {
+        if (!serverConnection.empty()) {
+            serverConnection += "\\n";
+        }
+        serverConnection += "OTA Server";
+    }
+    if (serverConnection.empty()) {
+        serverConnection = "none";
+    }
+    size_t browserCount = ClientsList::instance().getBrowsers().size();
+    bool sunshadeConnected = !ClientsList::instance().getSunshades().empty();
+    std::string clientConnections;
+    if (slaveConnected) {
+        clientConnections = "Slave";
+    }
+    if (sunshadeConnected) {
+        if (!clientConnections.empty()) {
+            clientConnections += ", ";
+        }
+        clientConnections += "SunShade";
+    }
+    if (clientConnections.empty()) {
+        clientConnections = "none";
+    }
     std::string currentSSID = WifiMgr::instance().currentWifiSSID();
+    std::string currentIpAddress = WifiMgr::instance().currentIpAddress();
+    int currentRssi = WifiMgr::instance().currentWifiRssi();
     std::string wifiStatus = WifiMgr::instance().statusText();
+    bool apMode = WifiMgr::instance().isApMode();
+        std::vector<MdnsHostInfo> mdnsHostInfos = MdnsMgr::instance().getHostInfos();
+        std::sort(mdnsHostInfos.begin(), mdnsHostInfos.end(), [](const MdnsHostInfo& left, const MdnsHostInfo& right) {
+            return std::lexicographical_compare(
+                left.name.begin(), left.name.end(), right.name.begin(), right.name.end(),
+                [](unsigned char leftCharacter, unsigned char rightCharacter) {
+                    return std::tolower(leftCharacter) < std::tolower(rightCharacter);
+                });
+        });
 
-    char buffer[512];
-    snprintf(buffer, sizeof(buffer),
-        "{\"type\":\"status\",\"ssid\":\"%s\",\"wifi\":\"%s\",\"generator\":\"%s\","
-        "\"generatorValve\":\"%s\",\"acValve\":\"%s\",\"acVoltage\":\"%s\",\"acCurrent\":\"%s\",\"acFrequency\":\"%s\",\"slaveConnection\":\"%s\",\"masterConnection\":\"%s\"}",
+        std::string mdnsResponders;
+        for (const MdnsHostInfo& hostInfo : mdnsHostInfos) {
+            if (!mdnsResponders.empty()) {
+                mdnsResponders += "\\n";
+            }
+            mdnsResponders += hostInfo.name + " (" + hostInfo.ipAddress + ")";
+        }
+        if (mdnsResponders.empty()) {
+            mdnsResponders = "none";
+        }
+
+        char buffer[1024];
+        snprintf(buffer, sizeof(buffer),
+                "{\"type\":\"status\",\"ssid\":\"%s\",\"ipAddress\":\"%s\",\"rssi\":%d,\"apMode\":%s,"
+                "\"serverConnection\":\"%s\",\"browserCount\":%u,\"clientConnections\":\"%s\",\"mdnsResponders\":\"%s\","
+                "\"wifi\":\"%s\",\"generator\":\"%s\","
+                "\"generatorValve\":\"%s\",\"acValve\":\"%s\",\"acVoltage\":\"%s\",\"acCurrent\":\"%s\",\"acFrequency\":\"%s\","
+                "\"slaveConnection\":\"%s\",\"masterConnection\":\"%s\",\"testMode\":\"%s\"}",
         currentSSID.c_str(),
+        currentIpAddress.c_str(),
+        currentRssi,
+        apMode ? "true" : "false",
+        serverConnection.c_str(),
+        static_cast<unsigned>(browserCount),
+        clientConnections.c_str(),
+                mdnsResponders.c_str(),
         wifiStatus.c_str(),
         genState.c_str(),
         genValve.c_str(),
@@ -402,7 +495,8 @@ void BrowserController::broadcastStatus()
         Utilities::floatToString(current).c_str(),
         Utilities::floatToString(frequency).c_str(),
         slaveConnection,
-        masterConnection
+        masterConnection,
+        testModeStatus.c_str()
 
     );
 

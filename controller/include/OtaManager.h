@@ -2,6 +2,8 @@
 #define OTA_MANAGER_H
 
 #include "TaskUtilities.h"
+#include <atomic>
+#include <esp_websocket_client.h>
 #include <string>
 #include <functional>
 
@@ -20,6 +22,7 @@ public:
   void init(const std::string& currentVersion);
 
   void begin();
+  bool isFirmwareServerOnline() const;
 
   /**
    * Check for available updates from the specified server URL
@@ -51,6 +54,10 @@ public:
   static void healthTaskEntry(void *param);
   static void healthTaskLoop();
   static void checkServerHealth();
+  static void commandTaskEntry(void *param);
+  static void commandTaskLoop();
+  static void commandWebSocketEvent(void* event_handler_arg, esp_event_base_t event_base,
+                                    int32_t event_id, void* event_data);
 
   /**
    * Get the current firmware version
@@ -85,15 +92,23 @@ private:
     // OTA task handle
   static TaskHandle_t otaTaskHandle;
   static TaskHandle_t healthTaskHandle;
+  static TaskHandle_t commandTaskHandle;
+  std::string resolvedServerUrl;
   bool _isUpdating;
+  std::atomic<bool> firmwareServerOnline_{false};
+  esp_websocket_client_handle_t commandClient_ = nullptr;
+  std::string commandClientIp_;
+  std::string lastCommandId_;
   static constexpr uint32_t HEALTH_CHECK_PERIOD_MS = 8000;
+  static constexpr uint32_t COMMAND_RECONNECT_PERIOD_MS = 2000;
+
+  static std::string deviceId();
+  void sendCommandStatus(const std::string& commandId, const std::string& status);
 
   /**
    * Fetch metadata from update server to get available version
    */
   void fetchVersionInfo(const std::string& updateServerUrl);
-
-  std::string resolveUpdateServerUrl(const std::string& updateServerUrl);
 
   /**
    * Download and install firmware from URL using esp_https_ota

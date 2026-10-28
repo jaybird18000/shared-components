@@ -23,6 +23,7 @@ public:
     GenRelay();
     void init();
     void setState(float voltage);
+    GenStates state() const;
     void setEnabled(bool enabled, bool start);
     bool enabled(bool start) const;
     const char* stateText() const;
@@ -30,9 +31,10 @@ public:
     void pulse(uint32_t durationMs, bool start);
     void momentaryStart();
     void momentaryStop();
+    static const char* genStateToString(GenStates s);
 
 private:
-    static const char* genStateToString(GenStates s);
+
     float VAC_ON_TRESHOLD = 90.0;
     gpio_num_t startPin_;
     gpio_num_t stopPin_;
@@ -128,6 +130,11 @@ inline bool GenRelay::enabled(bool startRelay) const
 
 }
 
+inline GenRelay::GenStates GenRelay::state() const
+{
+    return currentState_;
+}
+
 inline const char* GenRelay::stateText() const
 {
     return genStateToString(currentState_);
@@ -185,7 +192,6 @@ inline void GenRelay::setState(float voltage)
                 uint32_t durationMs = 5000;
                 esp_timer_start_once(stoppingTimer, durationMs * 1000);
             }
-            break;
             break;
         default:
             break;

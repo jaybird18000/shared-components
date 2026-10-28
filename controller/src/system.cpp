@@ -8,6 +8,7 @@
 #include "OtaManager.h"
 #include "wifiMgr.h"
 #include "nvsMgr.h"
+#include "MdnsMgr.h"
 #include "Pages.h"
 #include "LedController.h"
 #include "DeviceConfig.h"
@@ -15,6 +16,7 @@
 #include "DebugControl.h"
 #include "ConsoleApp.h"
 #include "SharedDataStore.h"
+#include "statusDb.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_http_server.h"
@@ -60,6 +62,12 @@ extern "C" void system_setup(void)
     wifiMgr.initialize();
     wifiMgr.startSTAandAP();
     SharedDataStore::init();
+    StatusDb::instance(); // Initialize the status database
+    bool testMode = false;
+    DebugControl::setTestMode(testMode);
+    // this call sets testMode for the local device role (master, slave, or sunshade)
+    StatusDb::instance().setTestModeBasedOnDeviceRole(testMode);
+
     vTaskDelay(pdMS_TO_TICKS(500)); // Allow WiFi to start before starting the server
     vTaskDelay(pdMS_TO_TICKS(5000)); // Allow WiFi to start before starting the server
     // used for entering commands via keyboard useing serial monitor
@@ -74,7 +82,7 @@ extern "C" void system_setup(void)
     // 3. Start the browser manager (worker + ping loop)
     BrowserController::instance().begin();
 
-
+    MdnsMgr::instance().init();
 
     if(DeviceConfig::instance().isMasterDevice())
     {

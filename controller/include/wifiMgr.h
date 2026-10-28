@@ -40,6 +40,8 @@ public:
     bool mdnsStarted();
     std::string statusText() const;
     std::string currentWifiSSID() const;
+    std::string currentIpAddress() const;
+    int currentWifiRssi() const;
 
     void readHostname(esp_netif_t *sta_netif);
 

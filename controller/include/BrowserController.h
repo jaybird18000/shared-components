@@ -1,4 +1,5 @@
 #pragma once
+#include "Valves.h"
 #include "TaskUtilities.h"
 
 class BrowserController {
@@ -25,7 +26,6 @@ private:
     static void broadcastStatus();
 
     static void processJsonCommand(const char* json);
-
 
 private:
     static constexpr const char* TAG = "BrowserController";

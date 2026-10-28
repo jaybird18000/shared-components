@@ -24,9 +24,10 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
   <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; overflow: hidden; }
-    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#0c1b2a; color:#e9f1f7; }
-    body { margin:0; min-height:100vh; display:flex; flex-direction:column; }
-    main { flex:1; display:flex; flex-direction:column; min-height:0; }
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#060d15; color:#e9f1f7; }
+    body { margin:0; }
+    .app-shell { max-width:480px; margin:0 auto; height:100%; height:100dvh; display:flex; flex-direction:column; background:#0c1b2a; position:relative; }
+    main { flex:1; display:flex; flex-direction:column; min-height:0; padding-bottom:64px; }
     header { position:relative; background:#132a45; padding:18px; text-align:center; box-shadow:0 2px 12px rgba(0,0,0,0.4); }
     header h1 { margin:0; font-size:1.2rem; }
     header p { margin:6px 0 0; color:#9bc5d6; font-size:0.94rem; }
@@ -41,6 +42,10 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
       overflow: auto;
     }
     .page.active { display:block; }
+    /* debug log fill */
+    #debugPage.active { display:flex; flex-direction:column; overflow:hidden; }
+    #debugPage .debug-container { flex:1; min-height:0; display:flex; flex-direction:column; }
+    #debugPage .card { flex:1; min-height:0; display:flex; flex-direction:column; margin-bottom:0; }
 
     .control-container, .debug-container, .config-container {
       width: 100%;
@@ -68,7 +73,14 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
       background:#1976d2;
     }
     .button.secondary { background:#374d68; }
+    .valve-actions { display:flex; gap:12px; }
+    .valve-actions .button { flex:1; width:auto; min-width:0; }
+    .generator-actions { display:flex; gap:12px; }
+    .generator-actions .button { flex:1; width:auto; min-width:0; }
 
+    .button:disabled { background:#555; color:#999; cursor:not-allowed; opacity:0.6; }
+    .valve-actions .button:disabled { cursor:default; }
+    #genStartButton:disabled, #genStopButton:disabled { cursor:default; }
     .button:active { background: inherit; opacity: 1; }
     button, .button { -webkit-tap-highlight-color: transparent; }
 
@@ -91,18 +103,24 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
       0%, 100% { opacity: 1; }
       50% { opacity: 0.5; }
     }
+    @keyframes testModeBlockBlink {
+      0%, 49% { background-color:#ff0000; }
+      50%, 100% { background-color:transparent; }
+    }
     .blink-feedback {
       animation: buttonBlink 0.6s ease-in-out;
     }
 
     .status-row { display:flex; justify-content:space-between; margin:10px 0; }
     .status-label { color:#99b7cd; }
-    .status-value { font-weight:700; text-transform: uppercase; }
+    .status-value { font-weight:700; text-transform: uppercase; margin-left:auto; text-align:right; }
     .status-value {
       display:inline-flex;
       align-items:center;
       gap:0.5rem;
     }
+    .status-value.measurement-value::before { content:none; }
+    .measurement-unit { width:4rem; margin-left:0.5rem; text-align:right; }
     .status-value::before {
       content: '●';
       font-size:0.95rem;
@@ -112,6 +130,11 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
     .status-value.status-yellow { color:#f5d442; }
     .status-value.status-green { color:#7ed321; }
     .status-value.status-purple { color:#b47cff; }
+    .status-page-value { font-weight:400; text-transform:none; white-space:pre-line; }
+    .status-page-value::before { content:none; }
+    .mdns-responders-row { align-items:flex-start; }
+    .connections-heading { margin:14px 0 8px; color:#99b7cd; }
+    .connection-row { padding-left:2ch; }
 
     .header-statuses {
       display:flex;
@@ -167,6 +190,12 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
     .wifi-ssid::before {
       content: '📶';
     }
+    .wifi-ssid.ap-mode::before {
+      content: '📡';
+    }
+    .wifi-ssid.ap-mode {
+      color:#f5d442;
+    }
     .wifi-ssid.hidden {
       display:none;
     }
@@ -174,8 +203,10 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
     .nav-bar {
       position: fixed;
       bottom: 20px;
-      left: 0;
+      left: 50%;
+      transform: translateX(-50%);
       width: 100%;
+      max-width: 480px;
       display: flex;
       justify-content: space-around;
       background: #132a45;
@@ -184,13 +215,20 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
     }
     .nav-button { color:#cbd8e6; background:none; border:none; font-size:0.95rem; cursor:pointer; }
     .nav-button.active { color:#ffffff; font-weight:700; }
+    .nav-button.test-mode-active {
+      color:#ffffff;
+      padding:6px 12px;
+      border-radius:6px;
+      animation:testModeBlockBlink 1s steps(1, end) infinite;
+    }
 
     .log-window {
       background:#050d17;
       border:1px solid #23405c;
       border-radius:16px;
       padding:12px;
-      height: calc(100dvh - 370px);
+      flex:1;
+      min-height:0;
       overflow:auto;
       font-family:monospace;
       font-size:0.85rem;
@@ -338,6 +376,16 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
       text-align: center;
       box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
     }
+    .update-status-close {
+      position: absolute;
+      top: 4px;
+      right: 8px;
+      cursor: pointer;
+      color: #9bc5d6;
+      font-size: 1.1rem;
+      line-height: 1;
+    }
+    .update-status-close:hover { color: #e9f1f7; }
     
     .confirmation-dialog {
       position: fixed;
@@ -345,7 +393,7 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
       left: 0;
       right: 0;
       bottom: 0;
-      background: #000000;
+      background: rgba(0, 0, 0, 0.6);
       display: none;
       z-index: 999;
       align-items: center;
@@ -390,7 +438,10 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
 
 <body>
   <!-- Update Status Popup (fixed to viewport) -->
-  <div id="updateStatus" class="update-status" style="display:none;"></div>
+  <div id="updateStatus" class="update-status" style="display:none;">
+    <span class="update-status-close" onclick="closeUpdateStatus()">&times;</span>
+    <span id="updateStatusMessage"></span>
+  </div>
   
   <!-- Firmware Update Confirmation Dialog -->
   <div id="confirmationDialog" class="confirmation-dialog" style="display:none;">
@@ -403,6 +454,7 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
     </div>
   </div>
 
+  <div class="app-shell">
   <header>
     <button class="header-reload" type="button" title="Reload page" aria-label="Reload page" onclick="reloadPage()">&#x21bb;</button>
     <h1>R33 Boat Controller (Master)</h1>
@@ -422,24 +474,32 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
             <span id="generatorState" class="status-value">UNKNOWN</span>
           </div>
 
-          <button class="button" id="genStartButton" onclick="startGenerator()">Start Gen</button>
-          <button class="button secondary" id="genStopButton" onclick="stopGenerator()">Stop Gen</button>
+          <div class="generator-actions">
+            <button class="button" id="genStartButton" onclick="startGenerator()">Start Gen</button>
+            <button class="button secondary" id="genStopButton" onclick="stopGenerator()">Stop Gen</button>
+          </div>
         </div>
 
         <div class="card">
-          <div class="status-row"><span class="status-label">AC Voltage</span><span id="acVoltage" class="status-value">--</span></div>
-          <div class="status-row"><span class="status-label">AC Current</span><span id="acCurrent" class="status-value">--</span></div>
-          <div class="status-row"><span class="status-label">AC Frequency</span><span id="acFrequency" class="status-value">--</span></div>
+          <div class="status-row"><span class="status-label">AC Voltage</span><span id="acVoltage" class="status-value measurement-value">--</span><span class="measurement-unit">vac</span></div>
+          <div class="status-row"><span class="status-label">AC Current</span><span id="acCurrent" class="status-value measurement-value">--</span><span class="measurement-unit">amps</span></div>
+          <div class="status-row"><span class="status-label">AC Frequency</span><span id="acFrequency" class="status-value measurement-value">--</span><span class="measurement-unit">hz</span></div>
         </div>
 
         <div class="card">
           <div class="status-row"><span class="status-label">Generator Valve</span><span id="genValveStatus" class="status-value">unknown</span></div>
-          <button class="button secondary" onclick="toggleGenValve()">Toggle Generator Valve</button>
+          <div class="valve-actions">
+            <button class="button secondary" id="genValveOpenButton" onclick="openGenValve()" disabled>Open</button>
+            <button class="button secondary" id="genValveCloseButton" onclick="closeGenValve()" disabled>Close</button>
+          </div>
         </div>
 
         <div class="card">
           <div class="status-row"><span class="status-label">AC Valve</span><span id="acValveStatus" class="status-value">unknown</span></div>
-          <button class="button secondary" onclick="toggleAcValve()">Toggle AC Valve</button>
+          <div class="valve-actions">
+            <button class="button secondary" id="acValveOpenButton" onclick="openAcValve()" disabled>Open</button>
+            <button class="button secondary" id="acValveCloseButton" onclick="closeAcValve()" disabled>Close</button>
+          </div>
         </div>
 
       </div>
@@ -468,8 +528,9 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
       <div class="page-container config-container">
 
         <div class="config-tabs">
-          <button class="config-tab-btn active" onclick="switchConfigTab('config')">Configuration</button>
+          <button class="config-tab-btn active" onclick="switchConfigTab('config')">Wifi</button>
           <button class="config-tab-btn" onclick="switchConfigTab('updates')">Updates</button>
+          <button class="config-tab-btn" onclick="switchConfigTab('settings')">Status</button>
         </div>
 
         <!-- CONFIGURATION TAB -->
@@ -548,7 +609,7 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
             <div class="input-row">
               <div class="ota-input-line">
                 <label for="updateServerHost">URL:</label>
-                <input id="updateServerHost" type="text" placeholder="192.168.1.100 or r33-ota.local" autocomplete="off" spellcheck="false" />
+                <input id="updateServerHost" type="text" placeholder="192.168.1.100 or r33-ota.local" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" />
               </div>
               <div class="ota-input-line">
                 <label for="updateServerPort">PORT:</label>
@@ -556,7 +617,7 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
               </div>
             </div>
 
-            <button class="button secondary" onclick="checkForUpdates()">Check for Updates</button>
+            <button class="button secondary" id="checkUpdatesBtn" onclick="checkForUpdates()">Check for Updates</button>
             <button class="button" id="updateBtn" onclick="startFirmwareUpdate()" style="display:none;">Update Now</button>
 
             <div id="updateProgress" style="display:none; margin-top:16px;">
@@ -571,6 +632,22 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
           </div>
         </div>
 
+        <!-- SETTINGS TAB -->
+        <div id="settingsTab" class="config-tab-content">
+          <div class="card">
+            <div class="status-row"><span class="status-label">Wifi</span><span id="statusWifiValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row"><span class="status-label">IP Addr</span><span id="statusIpValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row"><span class="status-label">RSSI</span><span id="statusRssiValue" class="status-value status-page-value">--</span></div>
+            <div class="connections-heading">Connections</div>
+            <div class="status-row connection-row"><span class="status-label">Servers</span><span id="statusServersValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row connection-row"><span class="status-label">Browsers</span><span id="statusBrowsersValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row connection-row"><span class="status-label">Clients</span><span id="statusClientsValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row"><span class="status-label">mDNS Name</span><span id="statusMdnsNameValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row mdns-responders-row"><span class="status-label">mDNS Responders</span><span id="statusMdnsRespondersValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row"><span class="status-label">Test Mode</span><span id="statusTestModeValue" class="status-value status-page-value status-green">None</span></div>
+          </div>
+        </div>
+
       </div>
     </section>
   </main>
@@ -578,7 +655,7 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
   <nav class="nav-bar">
     <button class="nav-button active" data-page="controlPage" onclick="showPage('controlPage')">Control</button>
     <button class="nav-button" data-page="debugPage" onclick="showPage('debugPage')">Debug</button>
-    <button class="nav-button" data-page="configPage" onclick="showPage('configPage')">Config</button>
+    <button id="settingsNavButton" class="nav-button" data-page="configPage" onclick="showPage('configPage')">Settings</button>
   </nav>
 <script>
     let socket = null;
@@ -597,6 +674,8 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
     --------------------------------------------------------- */
     let pendingStart = false;
     let pendingStop  = false;
+    let pendingGenValveAction = null;
+    let pendingAcValveAction = null;
     let ignoreGenState = false;
     let lastKnownState = "UNKNOWN";
 
@@ -606,7 +685,7 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
     function setButtonLoading(btn, text) {
       btn.disabled = true;
       btn.classList.add("secondary");
-      btn.innerHTML = `<span class="spinner"></span>${text}`;
+      btn.innerHTML = text;
     }
 
     function resetButton(btn, text, isPrimary=true) {
@@ -635,7 +714,7 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
     /* ---------------------------------------------------------
        PAGE + UI BASICS
     --------------------------------------------------------- */
-    function setSocketStatus(text, ssid) {
+    function setSocketStatus(text, ssid, wifiMode) {
       const status = document.getElementById('socketStatus');
       if (!status) return;
       const normalized = String(text || 'disconnected').toLowerCase();
@@ -646,8 +725,10 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
       }
       status.textContent = 'Browser: ' + String(text || 'disconnected').toUpperCase();
       status.appendChild(wifiSpan);
+      const isApMode = String(wifiMode || '').toLowerCase() === 'access point';
+      wifiSpan.classList.toggle('ap-mode', isApMode);
       if (ssid) {
-        wifiSpan.textContent = ssid;
+        wifiSpan.textContent = `${isApMode ? 'AP' : 'WiFi'}: ${ssid}`;
         wifiSpan.classList.remove('hidden');
       } else {
         wifiSpan.textContent = '';
@@ -685,6 +766,27 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
       } else if (normalized === 'idle') {
         status.classList.add('status-purple');
       }
+    }
+
+    function updateValveButtonColors(status, openButtonId, closeButtonId) {
+      const normalized = String(status || '').trim().toLowerCase();
+      const openButton = document.getElementById(openButtonId);
+      const closeButton = document.getElementById(closeButtonId);
+      const isClosed = normalized === 'closed';
+      const isOpen = normalized === 'open';
+      const isIdleOrError = normalized === 'idle' || normalized === 'error';
+      openButton.classList.toggle('secondary', !isClosed && !isIdleOrError);
+      closeButton.classList.toggle('secondary', !isOpen && !isIdleOrError);
+      openButton.disabled = !isClosed && !isIdleOrError;
+      closeButton.disabled = !isOpen && !isIdleOrError;
+    }
+
+    function shouldIgnoreValveStatus(status, pendingAction) {
+      const normalized = String(status || '').trim().toLowerCase();
+      if (!pendingAction) return false;
+      if (normalized === 'unknown' || normalized === '') return true;
+      return (pendingAction === 'opening' && normalized === 'closed') ||
+             (pendingAction === 'closing' && normalized === 'open');
     }
 
     function setSTAwifi(ssid_text, pw_text, isMaster) {
@@ -967,9 +1069,48 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
 
         updateGenButtons(genState);
 
-        setStatusText('genValveStatus', payload.generatorValve || 'unknown');
-        setStatusText('acValveStatus', payload.acValve || 'unknown');
-        setSocketStatus('connected', payload.ssid || '');
+        const genValveStatus = payload.generatorValve || 'unknown';
+        if (!shouldIgnoreValveStatus(genValveStatus, pendingGenValveAction)) {
+          pendingGenValveAction = null;
+          setStatusText('genValveStatus', genValveStatus);
+          updateValveButtonColors(genValveStatus, 'genValveOpenButton', 'genValveCloseButton');
+        }
+        const acValveStatus = payload.acValve || 'unknown';
+        if (!shouldIgnoreValveStatus(acValveStatus, pendingAcValveAction)) {
+          pendingAcValveAction = null;
+          setStatusText('acValveStatus', acValveStatus);
+          updateValveButtonColors(acValveStatus, 'acValveOpenButton', 'acValveCloseButton');
+        }
+        setSocketStatus('connected', payload.ssid || '', payload.apMode ? 'access point' : (payload.wifi || ''));
+        const wifiValue = document.getElementById('statusWifiValue');
+        const ipValue = document.getElementById('statusIpValue');
+        const rssiValue = document.getElementById('statusRssiValue');
+        const serversValue = document.getElementById('statusServersValue');
+        const browsersValue = document.getElementById('statusBrowsersValue');
+        const clientsValue = document.getElementById('statusClientsValue');
+        const mdnsNameValue = document.getElementById('statusMdnsNameValue');
+        const mdnsRespondersValue = document.getElementById('statusMdnsRespondersValue');
+        const testModeValue = document.getElementById('statusTestModeValue');
+        const settingsNavButton = document.getElementById('settingsNavButton');
+        if (wifiValue) wifiValue.textContent = payload.ssid || '--';
+        if (ipValue) ipValue.textContent = payload.ipAddress || '--';
+        if (rssiValue) rssiValue.textContent = payload.rssi ? `${payload.rssi} dBm` : '--';
+        if (serversValue) serversValue.textContent = payload.serverConnection || 'none';
+        if (browsersValue) browsersValue.textContent = payload.browserCount ?? 0;
+        if (clientsValue) clientsValue.textContent = payload.clientConnections || 'none';
+        if (mdnsNameValue) mdnsNameValue.textContent = window.location.hostname || '--';
+        if (mdnsRespondersValue) mdnsRespondersValue.textContent = payload.mdnsResponders || 'none';
+        if (testModeValue) {
+          testModeValue.textContent = payload.testMode || '--';
+          const tm = String(payload.testMode || '').trim().toLowerCase();
+          const tmActive = tm !== '' && tm !== 'none';
+          testModeValue.classList.toggle('status-red', tmActive);
+          testModeValue.classList.toggle('status-green', !tmActive);
+        }
+        if (settingsNavButton) {
+          const testMode = String(payload.testMode || '').trim().toLowerCase();
+          settingsNavButton.classList.toggle('test-mode-active', testMode !== '' && testMode !== 'none');
+        }
         if (payload.slaveConnection) {
           setSlaveStatus(payload.slaveConnection);
         }
@@ -1024,6 +1165,8 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
         const serverStatus = document.getElementById('otaServerStatus');
         serverStatus.textContent = payload.online ? 'Online' : 'Offline';
         serverStatus.style.color = payload.online ? '#4caf50' : '#e53935';
+        // Check for Updates also saves the host/port, so it must stay enabled to recover from a bad URL
+        document.getElementById('updateBtn').disabled = !payload.online;
       }
 
       if (payload.type === 'current_version_info') {
@@ -1041,7 +1184,7 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
 
       if (payload.type === 'update_status') {
         const statusDiv = document.getElementById('updateStatus');
-        statusDiv.textContent = payload.message || 'Update status unknown';
+        document.getElementById('updateStatusMessage').textContent = payload.message || 'Update status unknown';
         statusDiv.style.display = 'block';
         if (payload.status === 'success') {
           appendLog('✓ Firmware update successful!');
@@ -1121,8 +1264,30 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
     /* ---------------------------------------------------------
        VALVE + WIFI CONFIG
     --------------------------------------------------------- */
-    function toggleGenValve() { sendMessage({command:'toggle_gen_valve'}); }
-    function toggleAcValve() { sendMessage({command:'toggle_ac_valve'}); }
+    function openGenValve() {
+      pendingGenValveAction = 'opening';
+      setStatusText('genValveStatus', 'OPENING');
+      updateValveButtonColors('opening', 'genValveOpenButton', 'genValveCloseButton');
+      sendMessage({command:'open_gen_valve'});
+    }
+    function closeGenValve() {
+      pendingGenValveAction = 'closing';
+      setStatusText('genValveStatus', 'CLOSING');
+      updateValveButtonColors('closing', 'genValveOpenButton', 'genValveCloseButton');
+      sendMessage({command:'close_gen_valve'});
+    }
+    function openAcValve() {
+      pendingAcValveAction = 'opening';
+      setStatusText('acValveStatus', 'OPENING');
+      updateValveButtonColors('opening', 'acValveOpenButton', 'acValveCloseButton');
+      sendMessage({command:'open_ac_valve'});
+    }
+    function closeAcValve() {
+      pendingAcValveAction = 'closing';
+      setStatusText('acValveStatus', 'CLOSING');
+      updateValveButtonColors('closing', 'acValveOpenButton', 'acValveCloseButton');
+      sendMessage({command:'close_ac_valve'});
+    }
 
     function saveSTAWifiConfig() {
       const ssid = document.getElementById('ssid').value;
@@ -1182,18 +1347,23 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
     function switchConfigTab(tab) {
       const configTab = document.getElementById('configTab');
       const updatesTab = document.getElementById('updatesTab');
+      const settingsTab = document.getElementById('settingsTab');
       const tabBtns = document.querySelectorAll('.config-tab-btn');
+
+      configTab.classList.remove('active');
+      updatesTab.classList.remove('active');
+      settingsTab.classList.remove('active');
+      tabBtns.forEach((btn) => btn.classList.remove('active'));
 
       if (tab === 'config') {
         configTab.classList.add('active');
-        updatesTab.classList.remove('active');
         tabBtns[0].classList.add('active');
-        tabBtns[1].classList.remove('active');
-      } else {
-        configTab.classList.remove('active');
+      } else if (tab === 'updates') {
         updatesTab.classList.add('active');
-        tabBtns[0].classList.remove('active');
         tabBtns[1].classList.add('active');
+      } else if (tab === 'settings') {
+        settingsTab.classList.add('active');
+        tabBtns[2].classList.add('active');
       }
     }
 
@@ -1210,6 +1380,10 @@ static const char kAppPageHtml[] = R"HTML(<!DOCTYPE html>
         return null;
       }
       return {host, port, url: `http://${host}:${port}`};
+    }
+
+    function closeUpdateStatus() {
+      document.getElementById('updateStatus').style.display = 'none';
     }
 
     function checkForUpdates() {

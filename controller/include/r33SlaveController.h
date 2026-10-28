@@ -38,5 +38,7 @@ private:
 
     TaskHandle_t       messageTaskHandle        = nullptr;
     TaskHandle_t       measurementTaskHandle        = nullptr;
+    int testModeAcMonitorStartStopDelayCounter = 0; // Counter for delaying AC data generation in test mode
+    bool generateGoodACData = false; // Flag to indicate if good AC data should be generated in test mode   
 
 };

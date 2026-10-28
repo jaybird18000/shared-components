@@ -8,19 +8,64 @@
 #include "TaskUtilities.h"
 #include "Utilities.h"
 #include "wifiMgr.h"
+#include "MdnsMgr.h"
 #include <esp_ota_ops.h>
 #include <esp_http_client.h>
 #include <mdns.h>
 #include <lwip/inet.h>
-//#include <app_update.h>
 #include <ArduinoJson.h>
 #include <cstring>
 #include "esp_log.h"
 
 static const char* TAG = "OTA_MANAGER";
 
+namespace {
+bool getFirmwareServerHostInfo(MdnsHostInfo& hostInfo)
+{
+  for (const MdnsHostInfo& responder : MdnsMgr::instance().getHostInfos()) {
+    if (responder.name == "r33-ota" && responder.addressType == "IPv4" &&
+      !responder.ipAddress.empty()) {
+      hostInfo = responder;
+      return true;
+    }
+  }
+  return false;
+}
+
+// Resolves the currently configured OTA base URL fresh from NVS/mDNS each call,
+// so callers never act on a stale server address cached from a prior health check.
+std::string resolveFirmwareServerBaseUrl()
+{
+    std::string host = NvsMgr::instance().getUpdateServerHost();
+    std::string port = NvsMgr::instance().getUpdateServerPort();
+    if (host.empty() || port.empty() || !WifiMgr::instance().isSTAConnected()) {
+        return {};
+    }
+
+    std::string normalizedHost = host;
+    if (!normalizedHost.empty() && normalizedHost.back() == '.') {
+        normalizedHost.pop_back();
+    }
+    bool isMdnsHostname = (normalizedHost == "r33-ota" || normalizedHost == "r33-ota.local");
+
+    std::string firmwareServerIp;
+    if (isMdnsHostname) {
+        MdnsHostInfo firmwareServer;
+        if (!getFirmwareServerHostInfo(firmwareServer)) {
+            return {};
+        }
+        firmwareServerIp = firmwareServer.ipAddress;
+    } else {
+        firmwareServerIp = host;
+    }
+
+    return "http://" + firmwareServerIp + ":" + port;
+}
+}
+
 TaskHandle_t OtaManager::otaTaskHandle = nullptr;
 TaskHandle_t OtaManager::healthTaskHandle = nullptr;
+TaskHandle_t OtaManager::commandTaskHandle = nullptr;
 OtaManager& OtaManager::instance()
 {
     static OtaManager inst;
@@ -47,7 +92,15 @@ void OtaManager::begin()
     if (healthTaskHandle == nullptr) {
         xTaskCreate(healthTaskEntry, "OtaHealthTask", 4096, nullptr, 4, &healthTaskHandle);
     }
+    if (commandTaskHandle == nullptr) {
+      xTaskCreate(commandTaskEntry, "OtaCommandTask", 6144, nullptr, 4, &commandTaskHandle);
+    }
 }
+
+  bool OtaManager::isFirmwareServerOnline() const
+  {
+    return firmwareServerOnline_.load();
+  }
 
 void OtaManager::messageTaskEntry(void *param)
 {
@@ -145,16 +198,138 @@ void OtaManager::healthTaskEntry(void* param)
     OtaManager::healthTaskLoop();
 }
 
+std::string OtaManager::deviceId()
+{
+  switch (DeviceConfig::instance().getDeviceRole()) {
+    case DeviceRole::MASTER: return "r33-master-01";
+    case DeviceRole::SLAVE: return "r33-slave-01";
+    case DeviceRole::SUNSHADE: return "r33-sunshade-01";
+    default: return "r33-unknown";
+  }
+}
+
+void OtaManager::commandTaskEntry(void* param)
+{
+  OtaManager::commandTaskLoop();
+}
+
+void OtaManager::commandTaskLoop()
+{
+  OtaManager& manager = OtaManager::instance();
+  while (true) {
+    std::string host = NvsMgr::instance().getUpdateServerHost();
+    std::string port = NvsMgr::instance().getUpdateServerPort();
+    std::string normalizedHost = host;
+    if (!normalizedHost.empty() && normalizedHost.back() == '.') {
+      normalizedHost.pop_back();
+    }
+    // Only gate on mDNS advertisement when the configured host is the r33-ota name itself;
+    // a raw IP or other hostname should be dialed directly.
+    bool isMdnsHostname = (normalizedHost == "r33-ota" || normalizedHost == "r33-ota.local");
+
+    std::string firmwareServerIp;
+    bool firmwareServerReachable = false;
+    if (isMdnsHostname) {
+      MdnsHostInfo firmwareServer;
+      firmwareServerReachable = getFirmwareServerHostInfo(firmwareServer);
+      firmwareServerIp = firmwareServer.ipAddress;
+    } else if (!host.empty()) {
+      firmwareServerIp = host;
+      firmwareServerReachable = true;
+    }
+
+    if (manager.commandClient_ != nullptr &&
+        (!firmwareServerReachable || firmwareServerIp != manager.commandClientIp_)) {
+      esp_websocket_client_stop(manager.commandClient_);
+      esp_websocket_client_destroy(manager.commandClient_);
+      manager.commandClient_ = nullptr;
+      manager.commandClientIp_.clear();
+    }
+
+    if (firmwareServerReachable && manager.commandClient_ == nullptr &&
+        WifiMgr::instance().isSTAConnected()) {
+      if (port.empty()) {
+        vTaskDelay(pdMS_TO_TICKS(COMMAND_RECONNECT_PERIOD_MS));
+        continue;
+      }
+
+      std::string commandUrl = "ws://" + firmwareServerIp + ":" + port;
+      commandUrl += "/device?id=" + deviceId();
+
+      esp_websocket_client_config_t config = {};
+      config.uri = commandUrl.c_str();
+      config.reconnect_timeout_ms = COMMAND_RECONNECT_PERIOD_MS;
+      manager.commandClient_ = esp_websocket_client_init(&config);
+      if (manager.commandClient_ != nullptr) {
+        manager.commandClientIp_ = firmwareServerIp;
+        esp_websocket_register_events(manager.commandClient_, WEBSOCKET_EVENT_ANY,
+                        commandWebSocketEvent, &manager);
+        esp_websocket_client_start(manager.commandClient_);
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(COMMAND_RECONNECT_PERIOD_MS));
+  }
+}
+
+void OtaManager::sendCommandStatus(const std::string& commandId, const std::string& status)
+{
+  if (commandClient_ == nullptr || !esp_websocket_client_is_connected(commandClient_)) {
+    return;
+  }
+  std::string message = "{\"id\":\"" + commandId + "\",\"status\":\"" + status + "\"}";
+  esp_websocket_client_send_text(commandClient_, message.c_str(), message.length(), pdMS_TO_TICKS(1000));
+}
+
+void OtaManager::commandWebSocketEvent(void* event_handler_arg, esp_event_base_t event_base,
+                    int32_t event_id, void* event_data)
+{
+  OtaManager* manager = static_cast<OtaManager*>(event_handler_arg);
+  if (event_id != WEBSOCKET_EVENT_DATA || manager == nullptr) {
+    return;
+  }
+
+  auto* event = static_cast<esp_websocket_event_data_t*>(event_data);
+  if (event == nullptr || event->op_code != WS_TRANSPORT_OPCODES_TEXT || event->data_len <= 0) {
+    return;
+  }
+
+  DynamicJsonDocument document(256);
+  if (deserializeJson(document, event->data_ptr, event->data_len)) {
+    return;
+  }
+  const char* command = document["command"] | "";
+  const char* commandId = document["id"] | "";
+  if (strcmp(command, "start_update") != 0 || commandId[0] == '\0') {
+    return;
+  }
+  if (manager->lastCommandId_ == commandId) {
+    manager->sendCommandStatus(commandId, "duplicate");
+    return;
+  }
+  if (manager->_isUpdating || manager->resolvedServerUrl.empty()) {
+    manager->sendCommandStatus(commandId, "rejected");
+    return;
+  }
+
+  manager->lastCommandId_ = commandId;
+  manager->sendCommandStatus(commandId, "accepted");
+  OtaTaskParams* params = new OtaTaskParams{manager->resolvedServerUrl, 1};
+  if (xTaskCreate(otaTaskFunction, "OtaRemoteUpdate", 4096, params, 5, &otaTaskHandle) != pdPASS) {
+    delete params;
+    manager->sendCommandStatus(commandId, "failed");
+  }
+}
+
 void OtaManager::healthTaskLoop()
 {
-    ESP_LOGI(TAG, "Starting OTA server health check task");
+    //ESP_LOGI(TAG, "Starting OTA server health check task");
     while (true)
     {
         // Wakes on a get_ota_server_status notification or every period
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HEALTH_CHECK_PERIOD_MS));
-        ESP_LOGI(TAG, "Checking OTA server health...");
+        //ESP_LOGI(TAG, "Checking OTA server health...");
         checkServerHealth();
-        ESP_LOGI(TAG, "OTA server health check complete");
+        //ESP_LOGI(TAG, "OTA server health check complete");
     }
 }
 
@@ -166,46 +341,55 @@ void OtaManager::checkServerHealth()
     }
 
     bool online = false;
-    std::string host = NvsMgr::instance().getUpdateServerHost();
-    std::string port = NvsMgr::instance().getUpdateServerPort();
+    std::string healthUrl = resolveFirmwareServerBaseUrl();
 
-    if (!host.empty() && !port.empty() && WifiMgr::instance().isSTAConnected()) {
-        std::string baseUrl = "http://" + host + ":" + port;
-        std::string healthUrl = OtaManager::instance().resolveUpdateServerUrl(baseUrl);
-        if (!healthUrl.empty()) {
-          healthUrl += "/health?id=";
-          switch (DeviceConfig::instance().getDeviceRole()) {
+    if (!healthUrl.empty())
+    {
+        OtaManager::instance().resolvedServerUrl = healthUrl;
+        healthUrl += "/health?id=";
+        switch (DeviceConfig::instance().getDeviceRole())
+        {
             case DeviceRole::MASTER:
-              healthUrl += "r33-master-01";
-              break;
+                healthUrl += "r33-master-01";
+                break;
             case DeviceRole::SLAVE:
-              healthUrl += "r33-slave-01";
-              break;
+                healthUrl += "r33-slave-01";
+                break;
             case DeviceRole::SUNSHADE:
-              healthUrl += "r33-sunshade-01";
-              break;
-          }
-          healthUrl += "&version=" + getFirmwareVersion();
-          healthUrl += "&health_timeout_ms=" +
-                       std::to_string(HEALTH_CHECK_PERIOD_MS * 2 + 3000);
+                healthUrl += "r33-sunshade-01";
+                break;
+        }
+        healthUrl += "&version=" + getFirmwareVersion();
+        healthUrl += "&health_timeout_ms=" +
+                     std::to_string(HEALTH_CHECK_PERIOD_MS * 2 + 3000);
 
-            esp_http_client_config_t config = {};
-            config.url = healthUrl.c_str();
-            config.method = HTTP_METHOD_GET;
-            config.timeout_ms = 2500;
+        esp_http_client_config_t config = {};
+        config.url = healthUrl.c_str();
+        config.method = HTTP_METHOD_GET;
+        config.timeout_ms = 2500;
 
-            esp_http_client_handle_t client = esp_http_client_init(&config);
-            if (client) {
-                if (esp_http_client_open(client, 0) == ESP_OK) {
-                    esp_http_client_fetch_headers(client);
-                    online = esp_http_client_get_status_code(client) == 200;
-                }
-                esp_http_client_close(client);
-                esp_http_client_cleanup(client);
+        esp_http_client_handle_t client = esp_http_client_init(&config);
+        if (client)
+        {
+            if (esp_http_client_open(client, 0) == ESP_OK)
+            {
+                esp_http_client_fetch_headers(client);
+                online = esp_http_client_get_status_code(client) == 200;
             }
+            else
+            {
+                ESP_LOGW(TAG, "Failed to open HTTP client for health check");
+            }
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Failed to initialize HTTP client for health check");
         }
     }
 
+    OtaManager::instance().firmwareServerOnline_.store(online);
     std::string json = std::string("{\"type\":\"ota_server_status\",\"online\":") + (online ? "true" : "false") + "}";
     WsServer::instance().broadcastText(json, WsServer::AudienceType::BROWSERS);
 }
@@ -297,178 +481,17 @@ void OtaManager::checkForUpdates(const std::string& updateServerUrl) {
   fetchVersionInfo(updateServerUrl);
 }
 
-#if 0
-std::string OtaManager::resolveUpdateServerUrl(const std::string& updateServerUrl) {
-  ESP_LOGI(TAG, "Resolving update server URL: %s", updateServerUrl.c_str());
-  const std::size_t schemeEnd = updateServerUrl.find("://");
-  if (schemeEnd == std::string::npos) {
-    return updateServerUrl;
-  }
-
-  const std::size_t hostStart = schemeEnd + 3;
-  const std::size_t hostEnd = updateServerUrl.find_first_of("/?#", hostStart);
-  const std::size_t authorityEnd = hostEnd == std::string::npos ? updateServerUrl.size() : hostEnd;
-  std::string hostname = updateServerUrl.substr(hostStart, authorityEnd - hostStart);
-
-  const std::size_t portSeparator = hostname.rfind(':');
-  if (portSeparator != std::string::npos) {
-    hostname.erase(portSeparator);
-  }
-  if (!hostname.empty() && hostname.back() == '.') {
-    hostname.pop_back();
-  }
-
-  if (hostname != "r33-ota.local") {
-    return updateServerUrl;
-  }
-
-  mdns_result_t* results = nullptr;
-  uint32_t queryTimeout = 1000;
-  esp_err_t err = mdns_query_ptr("_http", "_tcp", queryTimeout, 20, &results);
-  if (err != ESP_OK || results == nullptr) {
-    ESP_LOGE(TAG, "Failed to discover OTA server via mDNS: %s", esp_err_to_name(err));
-    return {};
-  }
-
-  char addressBuffer[16] = {};
-  bool foundAddress = false;
-  for (mdns_result_t* result = results; result != nullptr; result = result->next) {
-    const char* resultHostname = result->hostname != nullptr ? result->hostname : "<none>";
-    const char* addressType = "none";
-    const char* address = "<none>";
-    if (result->addr != nullptr) {
-      addressType = result->addr->addr.type == ESP_IPADDR_TYPE_V4 ? "IPv4" : "IPv6";
-      if (result->addr->addr.type == ESP_IPADDR_TYPE_V4) {
-        inet_ntoa_r(result->addr->addr.u_addr.ip4, addressBuffer, sizeof(addressBuffer));
-        address = addressBuffer;
-      }
-    }
-    ESP_LOGI(TAG, "mDNS result: hostname=%s port=%u address_type=%s address=%s",
-             resultHostname, result->port, addressType, address);
-
-    if (result->hostname == nullptr || strcmp(result->hostname, "r33-ota") != 0 ||
-        result->addr == nullptr || result->addr->addr.type != ESP_IPADDR_TYPE_V4) {
-      continue;
-    }
-
-    inet_ntoa_r(result->addr->addr.u_addr.ip4, addressBuffer, sizeof(addressBuffer));
-    foundAddress = true;
-    break;
-  }
-  mdns_query_results_free(results);
-
-  if (!foundAddress) {
-    ESP_LOGE(TAG, "mDNS did not return an IPv4 address for r33-ota.local");
-    return {};
-  }
-
-  const std::size_t hostnamePortSeparator = updateServerUrl.find(':', hostStart);
-  const std::size_t replacementEnd = hostnamePortSeparator != std::string::npos &&
-                                             hostnamePortSeparator < authorityEnd
-                                         ? hostnamePortSeparator
-                                         : authorityEnd;
-
-  std::string resolvedUrl = updateServerUrl;
-  resolvedUrl.replace(hostStart, replacementEnd - hostStart, addressBuffer);
-  ESP_LOGI(TAG, "Resolved OTA server %s to %s", updateServerUrl.c_str(), resolvedUrl.c_str());
-  return resolvedUrl;
-}
-#endif
-
-std::string OtaManager::resolveUpdateServerUrl(const std::string& updateServerUrl) {
-  ESP_LOGI(TAG, "Resolving update server URL: %s", updateServerUrl.c_str());
-  const std::size_t schemeEnd = updateServerUrl.find("://");
-  if (schemeEnd == std::string::npos) {
-    return updateServerUrl;
-  }
-
-  const std::size_t hostStart = schemeEnd + 3;
-  const std::size_t hostEnd = updateServerUrl.find_first_of("/?#", hostStart);
-  const std::size_t authorityEnd = hostEnd == std::string::npos ? updateServerUrl.size() : hostEnd;
-  std::string hostname = updateServerUrl.substr(hostStart, authorityEnd - hostStart);
-
-  const std::size_t portSeparator = hostname.rfind(':');
-  if (portSeparator != std::string::npos) {
-    hostname.erase(portSeparator);
-  }
-  if (!hostname.empty() && hostname.back() == '.') {
-    hostname.pop_back();
-  }
-
-  if (hostname != "r33-ota.local") {
-    return updateServerUrl;
-  }
-
-  char addressBuffer[16] = {};
-  bool foundAddress = false;
-  constexpr uint32_t queryTimeout = 1000;
-
-  for (int attempt = 1; attempt <= 2 && !foundAddress; ++attempt) {
-    mdns_result_t* results = nullptr;
-    ESP_LOGI(TAG, "mDNS query attempt %d of 2 for r33-ota.local", attempt);
-    esp_err_t err = mdns_query_ptr("_http", "_tcp", queryTimeout, 20, &results);
-    if (err != ESP_OK) {
-      ESP_LOGW(TAG, "mDNS query attempt %d failed: %s", attempt, esp_err_to_name(err));
-      continue;
-    }
-
-    if (results == nullptr) {
-      ESP_LOGW(TAG, "mDNS query attempt %d returned no HTTP services", attempt);
-      continue;
-    }
-
-    for (mdns_result_t* result = results; result != nullptr; result = result->next) {
-      const char* resultHostname = result->hostname != nullptr ? result->hostname : "<none>";
-      const char* addressType = "none";
-      const char* address = "<none>";
-      if (result->addr != nullptr) {
-        addressType = result->addr->addr.type == ESP_IPADDR_TYPE_V4 ? "IPv4" : "IPv6";
-        if (result->addr->addr.type == ESP_IPADDR_TYPE_V4) {
-          inet_ntoa_r(result->addr->addr.u_addr.ip4, addressBuffer, sizeof(addressBuffer));
-          address = addressBuffer;
-        }
-      }
-      ESP_LOGI(TAG, "mDNS result: hostname=%s port=%u address_type=%s address=%s",
-               resultHostname, result->port, addressType, address);
-
-      if (result->hostname != nullptr && strcmp(result->hostname, "r33-ota") == 0 &&
-          result->addr != nullptr && result->addr->addr.type == ESP_IPADDR_TYPE_V4) {
-        foundAddress = true;
-        break;
-      }
-    }
-    mdns_query_results_free(results);
-
-    if (!foundAddress && attempt == 1) {
-      ESP_LOGW(TAG, "r33-ota.local not found on first mDNS query; retrying");
-    }
-  }
-
-  if (!foundAddress) {
-    ESP_LOGE(TAG, "mDNS did not return an IPv4 address for r33-ota.local after two queries");
-    return {};
-  }
-
-  const std::size_t hostnamePortSeparator = updateServerUrl.find(':', hostStart);
-  const std::size_t replacementEnd = hostnamePortSeparator != std::string::npos &&
-                                             hostnamePortSeparator < authorityEnd
-                                         ? hostnamePortSeparator
-                                         : authorityEnd;
-
-  std::string resolvedUrl = updateServerUrl;
-  resolvedUrl.replace(hostStart, replacementEnd - hostStart, addressBuffer);
-  ESP_LOGI(TAG, "Resolved OTA server %s to %s", updateServerUrl.c_str(), resolvedUrl.c_str());
-  return resolvedUrl;
-}
-
 void OtaManager::fetchVersionInfo(const std::string& updateServerUrl) {
-  std::string resolvedUrl = resolveUpdateServerUrl(updateServerUrl);
+  // Resolve fresh instead of trusting resolvedServerUrl, which is only refreshed
+  // by the background health task and can lag behind a just-saved host/port.
+  std::string resolvedUrl = resolveFirmwareServerBaseUrl();
   if (resolvedUrl.empty()) {
     if (_statusCallback) {
       _statusCallback("Could not resolve OTA server via mDNS", false);
     }
     return;
   }
+  resolvedServerUrl = resolvedUrl;
 
   // Build metadata URL (append /metadata.json if not already there)
   std::string metadataUrl = resolvedUrl;
@@ -607,13 +630,16 @@ void OtaManager::startUpdate(const std::string& updateServerUrl) {
     return;
   }
 
-  std::string resolvedUrl = resolveUpdateServerUrl(updateServerUrl);
+  // Resolve fresh instead of trusting resolvedServerUrl, which is only refreshed
+  // by the background health task and can lag behind a just-saved host/port.
+  std::string resolvedUrl = resolveFirmwareServerBaseUrl();
   if (resolvedUrl.empty()) {
     if (_statusCallback) {
       _statusCallback("Could not resolve OTA server via mDNS", false);
     }
     return;
   }
+  resolvedServerUrl = resolvedUrl;
 
   _isUpdating = true;
 
@@ -698,6 +724,20 @@ void OtaManager::downloadAndInstallFirmware(const std::string& firmwareUrl) {
   }
 
   int total_length = esp_http_client_fetch_headers(client);
+
+  int status_code = esp_http_client_get_status_code(client);
+  if (status_code != 200) {
+    ESP_LOGE(TAG, "Firmware download HTTP status code: %d", status_code);
+    if (_statusCallback) {
+      _statusCallback(std::string("Firmware download HTTP error: ") + std::to_string(status_code), false);
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    esp_ota_abort(update_handle);
+    _isUpdating = false;
+    return;
+  }
+
   int downloaded = 0;
   int bytes_read;
   char* buffer = (char*)malloc(2048);  // Reduced from 4096 to avoid stack issues

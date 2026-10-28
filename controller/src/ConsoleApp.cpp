@@ -151,8 +151,8 @@ void ConsoleApp::writeToConsole(const std::string msg)
 void ConsoleApp::printDebugControlList()
 {
     writeToConsole("----- Debug Control Items -----");
-    for (size_t i = 0; i < static_cast<size_t>(Item::COUNT); ++i) {
-        Item item = static_cast<Item>(i);
+    for (size_t i = 0; i < static_cast<size_t>(DebugItem::COUNT); ++i) {
+        DebugItem item = static_cast<DebugItem>(i);
         char line[64];
         snprintf(line, sizeof(line), "%2u) %-20s [%s]",
                  (unsigned)i,
@@ -171,12 +171,12 @@ bool ConsoleApp::handleDebugControlInput(const char* input)
 
     char* endptr = nullptr;
     long idx = strtol(input, &endptr, 10);
-    if (endptr == input || idx < 0 || idx >= static_cast<long>(Item::COUNT)) {
+    if (endptr == input || idx < 0 || idx >= static_cast<long>(DebugItem::COUNT)) {
         writeToConsole("Invalid item number");
         return true;
     }
 
-    Item item = static_cast<Item>(idx);
+    DebugItem item = static_cast<DebugItem>(idx);
     bool newVal = !DebugControl::enabled(item);
     DebugControl::set(item, newVal);
 

@@ -6,6 +6,7 @@
 #include "SharedDataStore.h"
 #include "TaskUtilities.h"
 #include "DebugServices.h"
+#include "DebugControl.h"
 #include "arduinojson.h"
 #include "esp_log.h"
 
@@ -259,6 +260,11 @@ void R33ClientController::messageTaskLoop() {
                     {
                         doc["source"] = "sunshade";
                     }
+                    doc["testMode"] = false;
+                    if(DebugControl::testMode())
+                    {
+                        doc["testMode"] = true;
+                    }
 
                     std::string out;
                     serializeJson(doc, out);  
@@ -268,7 +274,7 @@ void R33ClientController::messageTaskLoop() {
                     ESP_LOGI(TAG,"Sending client registration message to master: %s", out.c_str());           
                     clientSendBinary(bytes.data(), bytes.size());
 
-                    debugServices::postDebug("Connected to master, sending registration msg");
+                    debugServices::postDebug("Connected to master, sending %s registration msg", doc["source"].as<const char*>());
                     break;
                 }
                 case TaskUtilities::MsgTypes::DATA:

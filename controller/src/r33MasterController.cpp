@@ -1,7 +1,6 @@
 #include "r33MasterController.h"
 #include "WsServer.h"
 #include "clientsList.h"
-#include "GenRelay.h"
 #include "nvsMgr.h"
 #include "SharedDataStore.h"
 #include "DebugServices.h"
@@ -14,6 +13,7 @@
 #include "OtaManager.h"
 #include "version.h"
 #include "DebugControl.h"
+#include "statusDb.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -24,15 +24,13 @@
 
 static const char* TAG = "r33MasterController";
 
-static ValvesController valves;
-static GenRelay genRelay;
+static auto& valves = ValvesController::instance();
 
 void r33MasterController::start() {
 
     TaskUtilities::createTaskWithQueue(TaskUtilities::TaskNames::R33_MASTER_CONTROLLER_TASK, r33MasterControllerTask, sizeof(TaskUtilities::MsgItem));
 
     valves.init();
-    genRelay.init();
 
 }
 
@@ -108,8 +106,7 @@ void r33MasterController::handleBrowserClientMsg(int sockfd, const std::string &
         }
         if (message.find("stop_generator") != std::string::npos) {
 //            ESP_LOGW(TAG, "handleBrowserClientMsg:stop_generator command received: Len %d", (int)message.size());
-//            genRelay.setEnabled(!genRelay.enabled());
-            //genRelay.momentary();
+
             debugServices::postDebug(std::string("Stop Generator cmd rcvd "));
 
             std::vector<ClientInfo*> slaves = ClientsList::instance().getSlaves();
@@ -137,25 +134,27 @@ void r33MasterController::handleBrowserClientMsg(int sockfd, const std::string &
        
             return;
         }
-        if (message.find("toggle_gen_valve") != std::string::npos) {
-            ESP_LOGW(TAG, "handleBrowserClientMsg:toggle_gen_valve command received");
-            if (valves.generatorValve().state() == ValveState::Open) {
-                valves.closeGenerator();
-            } else {
-                valves.openGenerator();
-            }
-            debugServices::postDebug("Generator valve command received");
+        if (message.find("open_gen_valve") != std::string::npos) {
+            valves.openGenerator();
+            debugServices::postDebug("Open generator valve command received");
 
             return;
         }
-        if (message.find("toggle_ac_valve") != std::string::npos) {
-            ESP_LOGW(TAG, "handleBrowserClientMsg:toggle_ac_valve command received");
-            if (valves.acValve().state() == ValveState::Open) {
-                valves.closeAirConditioner();
-            } else {
-                valves.openAirConditioner();
-            }
-            debugServices::postDebug("AC valve command received");
+        if (message.find("close_gen_valve") != std::string::npos) {
+            valves.closeGenerator();
+            debugServices::postDebug("Close generator valve command received");
+
+            return;
+        }
+        if (message.find("open_ac_valve") != std::string::npos) {
+            valves.openAirConditioner();
+            debugServices::postDebug("Open AC valve command received");
+
+            return;
+        }
+        if (message.find("close_ac_valve") != std::string::npos) {
+            valves.closeAirConditioner();
+            debugServices::postDebug("Close AC valve command received");
 
             return;
         }
@@ -176,7 +175,11 @@ void r33MasterController::handleWebSrvClientMsg(int sockfd, const std::string& m
             float current = doc["payload"]["current"];
             float freq = doc["payload"]["frequency"];
             float watts = doc["payload"]["watts"];
-            std::string genStateStr = doc["payload"]["genStatus"];
+
+            GenRelay::GenStates genState = static_cast<GenRelay::GenStates>(doc["payload"]["genStatus"].as<int>());
+
+//            std::string genStateStr = doc["payload"]["genStatus"];
+
             SharedAcData_t msg = {};
             msg.voltage     = voltage;
             msg.current     = current;
@@ -184,10 +187,13 @@ void r33MasterController::handleWebSrvClientMsg(int sockfd, const std::string& m
             msg.watts       = watts;
             msg.timestampMs = esp_timer_get_time() / 1000ULL;
 
+            strcpy(msg.genStatus, GenRelay::genStateToString(genState));
+
             // ⭐ YES — copy the std::string directly into the char buffer
-            std::strncpy(msg.genStatus, genStateStr.c_str(), sizeof(msg.genStatus) - 1);
-            msg.genStatus[sizeof(msg.genStatus) - 1] = '\0';
+//            std::strncpy(msg.genStatus, genStateStr.c_str(), sizeof(msg.genStatus) - 1);
+//            msg.genStatus[sizeof(msg.genStatus) - 1] = '\0';
             SharedDataStore::set(msg.voltage, msg.current, msg.frequency, msg.watts, msg.genStatus);
+            StatusDb::instance().setAcData(voltage, current, freq, watts, genState);
 
         }
         else if (strcmp(type, "command") == 0) {
@@ -199,19 +205,56 @@ void r33MasterController::handleWebSrvClientMsg(int sockfd, const std::string& m
         }
         else if(strcmp(type,"clientRegistration") == 0)
         {
+            bool isSlave = false;
+            bool isSunshade = false;    
             if(doc["source"] == "slave")
             {
-                ESP_LOGI(TAG, "Registering slave client: %d", sockfd);
+                ESP_LOGI(TAG, "Registering SLAVE client: %d", sockfd);
+                debugServices::postDebug("Registering SLAVE client: %d", sockfd);
                 ClientsList::instance().updateClientType(sockfd, ClientInfo::ClientType::SLAVE);
+                isSlave = true;
             }
             else if(doc["source"] == "sunshade")
             {
-                ESP_LOGI(TAG, "Registering sunshade client: %d", sockfd);
+                ESP_LOGI(TAG, "Registering SUNSHADE client: %d", sockfd);
+                debugServices::postDebug("Registering SUNSHADE client: %d", sockfd);
                 ClientsList::instance().updateClientType(sockfd, ClientInfo::ClientType::SUNSHADE);
+                isSunshade = true;
             }
             else
             {
                 ESP_LOGW(TAG,"Master rcvd unkown clientRegistration of %s ", doc["source"]);
+            }
+            if(doc.containsKey("testMode"))
+            {
+                if(doc["testMode"] == true)
+                {
+                    if(isSlave)
+                    {
+                        StatusDb::instance().setSlaveTestMode(true);
+                    }
+                    else if(isSunshade)
+                    {
+                        StatusDb::instance().setSunShadeTestMode(true);
+                    }
+                    ESP_LOGI(TAG, "Registration Msg: Test mode enabled");
+                }
+                else
+                {
+                    if(isSlave)
+                    {
+                        StatusDb::instance().setSlaveTestMode(false);
+                    }
+                    else if(isSunshade)
+                    {
+                        StatusDb::instance().setSunShadeTestMode(false);
+                    }   
+                    ESP_LOGI(TAG, "Registration Msg: Test mode disabled");
+                }
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Registration Msg does not specify Test mode");
             }
         }
         else

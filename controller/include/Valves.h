@@ -21,8 +21,10 @@ public:
     void close();
     void stop();
     void update();
+    void setStateByReadingLimitSwitches();
     ValveState state() const;
     const char* statusText() const;
+    static const char* statusText(ValveState theState);
     const char* name() const;
 
 private:
@@ -36,10 +38,14 @@ private:
     ValveState state_;
     int64_t actionStartUs_;
     static constexpr int64_t kActionTimeoutUs = 15LL * 1000000LL;
+    bool testModeIdle_;
+    bool testModeError_;
 };
 
 class ValvesController {
 public:
+    static ValvesController& instance();
+
     ValvesController();
     void init();
     void openGenerator();
@@ -53,6 +59,7 @@ public:
 private:
     Valve generatorValve_;
     Valve acValve_;
+
 };
 
 #endif // VALVES_H

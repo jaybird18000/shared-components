@@ -17,9 +17,10 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
   <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; overflow: hidden; }
-    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#0c1b2a; color:#e9f1f7; }
-    body { margin:0; min-height:100vh; display:flex; flex-direction:column; }
-    main { flex:1; display:flex; flex-direction:column; min-height:0; }
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#060d15; color:#e9f1f7; }
+    body { margin:0; }
+    .app-shell { max-width:480px; margin:0 auto; height:100%; height:100dvh; display:flex; flex-direction:column; background:#0c1b2a; position:relative; }
+    main { flex:1; display:flex; flex-direction:column; min-height:0; padding-bottom:64px; }
     header { position:relative; background:#132a45; padding:18px; text-align:center; box-shadow:0 2px 12px rgba(0,0,0,0.4); }
     header h1 { margin:0; font-size:1.2rem; }
     header p { margin:6px 0 0; color:#9bc5d6; font-size:0.94rem; }
@@ -34,6 +35,10 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
       overflow: auto;
     }
     .page.active { display:block; }
+    /* debug log fill */
+    #debugPage.active { display:flex; flex-direction:column; overflow:hidden; }
+    #debugPage .debug-container { flex:1; min-height:0; display:flex; flex-direction:column; }
+    #debugPage .card { flex:1; min-height:0; display:flex; flex-direction:column; margin-bottom:0; }
 
     .control-container,
     .debug-container,
@@ -63,6 +68,7 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
       background:#1976d2;
     }
     .button.secondary { background:#374d68; }
+    .button:disabled { background:#555; color:#999; cursor:not-allowed; opacity:0.6; }
 
     /* ⭐ Added spinner CSS */
     .spinner {
@@ -87,14 +93,27 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
     .blink-feedback {
       animation: buttonBlink 0.6s ease-in-out;
     }
+    @keyframes testModeBlockBlink {
+      0%, 49% { background-color:#ff0000; }
+      50%, 100% { background-color:transparent; }
+    }
+    .test-mode-active {
+      animation: testModeBlockBlink 1s steps(1, end) infinite;
+    }
 
     .status-row {
       display:flex;
       justify-content:space-between;
+      align-items:center;
       margin:10px 0;
     }
     .status-label { color:#99b7cd; }
-    .status-value { font-weight:700; text-transform: uppercase; }
+    .status-value {
+      font-weight:700;
+      text-transform: uppercase;
+      margin-left:auto;
+      text-align:right;
+    }
     .status-value {
       display:inline-flex;
       align-items:center;
@@ -109,6 +128,11 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
     .status-value.status-yellow { color:#f5d442; }
     .status-value.status-green { color:#7ed321; }
     .status-value.status-purple { color:#b47cff; }
+    .status-page-value { font-weight:400; text-transform:none; white-space:pre-line; }
+    .status-page-value::before { content:none; }
+    .mdns-responders-row { align-items:flex-start; }
+    .connections-heading { margin:14px 0 8px; color:#99b7cd; }
+    .connection-row { padding-left:2ch; }
 
     .header-statuses {
       display:flex;
@@ -164,6 +188,12 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
     .wifi-ssid::before {
       content: '📶';
     }
+    .wifi-ssid.ap-mode::before {
+      content: '📡';
+    }
+    .wifi-ssid.ap-mode {
+      color:#f5d442;
+    }
     .wifi-ssid.hidden {
       display:none;
     }
@@ -171,8 +201,10 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
     .nav-bar {
       position: fixed;
       bottom: 20px;
-      left: 0;
+      left: 50%;
+      transform: translateX(-50%);
       width: 100%;
+      max-width: 480px;
       display: flex;
       justify-content: space-around;
       background: #132a45;
@@ -193,7 +225,8 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
       border:1px solid #23405c;
       border-radius:16px;
       padding:12px;
-      height: calc(100dvh - 370px);
+      flex:1;
+      min-height:0;
       overflow:auto;
       font-family:monospace;
       font-size:0.85rem;
@@ -348,6 +381,16 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
       text-align: center;
       box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
     }
+    .update-status-close {
+      position: absolute;
+      top: 4px;
+      right: 8px;
+      cursor: pointer;
+      color: #9bc5d6;
+      font-size: 1.1rem;
+      line-height: 1;
+    }
+    .update-status-close:hover { color: #e9f1f7; }
     
     .confirmation-dialog {
       position: fixed;
@@ -355,7 +398,7 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
       left: 0;
       right: 0;
       bottom: 0;
-      background: #000000;
+      background: rgba(0, 0, 0, 0.6);
       display: none;
       z-index: 999;
       align-items: center;
@@ -400,7 +443,10 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
 
 <body>
   <!-- Update Status Popup (fixed to viewport) -->
-  <div id="updateStatus" class="update-status" style="display:none;"></div>
+  <div id="updateStatus" class="update-status" style="display:none;">
+    <span class="update-status-close" onclick="closeUpdateStatus()">&times;</span>
+    <span id="updateStatusMessage"></span>
+  </div>
   
   <!-- Firmware Update Confirmation Dialog -->
   <div id="confirmationDialog" class="confirmation-dialog" style="display:none;">
@@ -413,6 +459,7 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
     </div>
   </div>
 
+  <div class="app-shell">
   <header>
     <button class="header-reload" type="button" title="Reload page" aria-label="Reload page" onclick="reloadPage()">&#x21bb;</button>
     <h1>R33 Sun Shade Controller</h1>
@@ -474,8 +521,9 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
       <div class="page-container config-container">
 
         <div class="config-tabs">
-          <button class="config-tab-btn active" onclick="switchConfigTab('config')">Configuration</button>
+          <button class="config-tab-btn active" onclick="switchConfigTab('config')">Wifi</button>
           <button class="config-tab-btn" onclick="switchConfigTab('updates')">Updates</button>
+          <button class="config-tab-btn" onclick="switchConfigTab('settings')">Status</button>
         </div>
 
         <!-- CONFIGURATION TAB -->
@@ -543,7 +591,7 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
             <div class="input-row">
               <div class="ota-input-line">
                 <label for="updateServerHost">URL:</label>
-                <input id="updateServerHost" type="text" placeholder="192.168.1.100 or r33-ota.local" autocomplete="off" spellcheck="false" />
+                <input id="updateServerHost" type="text" placeholder="192.168.1.100 or r33-ota.local" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" />
               </div>
               <div class="ota-input-line">
                 <label for="updateServerPort">PORT:</label>
@@ -551,7 +599,7 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
               </div>
             </div>
 
-            <button class="button secondary" onclick="checkForUpdates()">Check for Updates</button>
+            <button class="button secondary" id="checkUpdatesBtn" onclick="checkForUpdates()">Check for Updates</button>
             <button class="button" id="updateBtn" onclick="startFirmwareUpdate()" style="display:none;">Update Now</button>
 
             <div id="updateProgress" style="display:none; margin-top:16px;">
@@ -566,6 +614,22 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
           </div>
         </div>
 
+        <!-- SETTINGS TAB -->
+        <div id="settingsTab" class="config-tab-content">
+          <div class="card">
+            <div class="status-row"><span class="status-label">Wifi</span><span id="statusWifiValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row"><span class="status-label">IP Addr</span><span id="statusIpValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row"><span class="status-label">RSSI</span><span id="statusRssiValue" class="status-value status-page-value">--</span></div>
+            <div class="connections-heading">Connections</div>
+            <div class="status-row connection-row"><span class="status-label">Servers</span><span id="statusServersValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row connection-row"><span class="status-label">Browsers</span><span id="statusBrowsersValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row connection-row"><span class="status-label">Clients</span><span id="statusClientsValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row"><span class="status-label">mDNS Name</span><span id="statusMdnsNameValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row mdns-responders-row"><span class="status-label">mDNS Responders</span><span id="statusMdnsRespondersValue" class="status-value status-page-value">--</span></div>
+            <div class="status-row"><span class="status-label">Test Mode</span><span id="statusTestModeValue" class="status-value status-page-value status-green">None</span></div>
+          </div>
+        </div>
+
       </div>
     </section>
 
@@ -574,8 +638,9 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
   <nav class="nav-bar">
     <button class="nav-button active" data-page="controlPage" onclick="showPage('controlPage')">Control</button>
     <button class="nav-button" data-page="debugPage" onclick="showPage('debugPage')">Debug</button>
-    <button class="nav-button" data-page="configPage" onclick="showPage('configPage')">Config</button>
+    <button id="settingsNavButton" class="nav-button" data-page="configPage" onclick="showPage('configPage')">Settings</button>
   </nav>
+  </div>
   <script>
     let socket = null;
     let pageIndex = 0;
@@ -631,7 +696,7 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
     /* ---------------------------------------------------------
        PAGE + UI BASICS
     --------------------------------------------------------- */
-    function setSocketStatus(text, ssid) {
+    function setSocketStatus(text, ssid, wifiMode) {
       const status = document.getElementById('socketStatus');
       if (!status) return;
       const normalized = String(text || 'disconnected').toLowerCase();
@@ -642,8 +707,10 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
       }
       status.textContent = 'Browser: ' + String(text || 'disconnected').toUpperCase();
       status.appendChild(wifiSpan);
+      const isApMode = String(wifiMode || '').toLowerCase() === 'access point';
+      wifiSpan.classList.toggle('ap-mode', isApMode);
       if (ssid) {
-        wifiSpan.textContent = ssid;
+        wifiSpan.textContent = `${isApMode ? 'AP' : 'WiFi'}: ${ssid}`;
         wifiSpan.classList.remove('hidden');
       } else {
         wifiSpan.textContent = '';
@@ -943,7 +1010,36 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
 
         updateShadeButtons(shadeState);
 
-        setSocketStatus('connected', payload.ssid || '');
+        setSocketStatus('connected', payload.ssid || '', payload.apMode ? 'access point' : (payload.wifi || ''));
+        const wifiValue = document.getElementById('statusWifiValue');
+        const ipValue = document.getElementById('statusIpValue');
+        const rssiValue = document.getElementById('statusRssiValue');
+        const serversValue = document.getElementById('statusServersValue');
+        const browsersValue = document.getElementById('statusBrowsersValue');
+        const clientsValue = document.getElementById('statusClientsValue');
+        const mdnsNameValue = document.getElementById('statusMdnsNameValue');
+        const mdnsRespondersValue = document.getElementById('statusMdnsRespondersValue');
+        const testModeValue = document.getElementById('statusTestModeValue');
+        const settingsNavButton = document.getElementById('settingsNavButton');
+        if (wifiValue) wifiValue.textContent = payload.ssid || window.location.hostname || '--';
+        if (ipValue) ipValue.textContent = payload.ipAddress || '--';
+        if (rssiValue) rssiValue.textContent = payload.rssi ? `${payload.rssi} dBm` : '--';
+        if (serversValue) serversValue.textContent = payload.serverConnection || 'none';
+        if (browsersValue) browsersValue.textContent = payload.browserCount ?? 0;
+        if (clientsValue) clientsValue.textContent = payload.clientConnections || 'none';
+        if (mdnsNameValue) mdnsNameValue.textContent = window.location.hostname || '--';
+        if (mdnsRespondersValue) mdnsRespondersValue.textContent = payload.mdnsResponders || 'none';
+        if (testModeValue) {
+          testModeValue.textContent = payload.testMode || 'None';
+          const tm = String(payload.testMode || '').trim().toLowerCase();
+          const tmActive = tm !== '' && tm !== 'none';
+          testModeValue.classList.toggle('status-red', tmActive);
+          testModeValue.classList.toggle('status-green', !tmActive);
+        }
+        if (settingsNavButton) {
+          const testMode = String(payload.testMode || '').trim().toLowerCase();
+          settingsNavButton.classList.toggle('test-mode-active', testMode !== '' && testMode !== 'none');
+        }
 
         const percentage = payload.shadePosition;
         if (percentage !== undefined && percentage !== null) {
@@ -999,6 +1095,8 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
         const serverStatus = document.getElementById('otaServerStatus');
         serverStatus.textContent = payload.online ? 'Online' : 'Offline';
         serverStatus.style.color = payload.online ? '#4caf50' : '#e53935';
+        // Check for Updates also saves the host/port, so it must stay enabled to recover from a bad URL
+        document.getElementById('updateBtn').disabled = !payload.online;
       }
 
       if (payload.type === 'current_version_info') {
@@ -1016,7 +1114,7 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
 
       if (payload.type === 'update_status') {
         const statusDiv = document.getElementById('updateStatus');
-        statusDiv.textContent = payload.message || 'Update status unknown';
+        document.getElementById('updateStatusMessage').textContent = payload.message || 'Update status unknown';
         statusDiv.style.display = 'block';
         if (payload.status === 'success') {
           appendLog('✓ Firmware update successful!');
@@ -1163,18 +1261,23 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
     function switchConfigTab(tab) {
       const configTab = document.getElementById('configTab');
       const updatesTab = document.getElementById('updatesTab');
+      const settingsTab = document.getElementById('settingsTab');
       const tabBtns = document.querySelectorAll('.config-tab-btn');
+
+      configTab.classList.remove('active');
+      updatesTab.classList.remove('active');
+      settingsTab.classList.remove('active');
+      tabBtns.forEach((btn) => btn.classList.remove('active'));
 
       if (tab === 'config') {
         configTab.classList.add('active');
-        updatesTab.classList.remove('active');
         tabBtns[0].classList.add('active');
-        tabBtns[1].classList.remove('active');
-      } else {
-        configTab.classList.remove('active');
+      } else if (tab === 'updates') {
         updatesTab.classList.add('active');
-        tabBtns[0].classList.remove('active');
         tabBtns[1].classList.add('active');
+      } else if (tab === 'settings') {
+        settingsTab.classList.add('active');
+        tabBtns[2].classList.add('active');
       }
     }
 
@@ -1191,6 +1294,10 @@ static const char kSunShadePageHtml[] PROGMEM = R"HTML(
         return null;
       }
       return {host, port, url: `http://${host}:${port}`};
+    }
+
+    function closeUpdateStatus() {
+      document.getElementById('updateStatus').style.display = 'none';
     }
 
     function checkForUpdates() {

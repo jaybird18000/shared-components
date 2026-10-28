@@ -1,5 +1,5 @@
 #pragma once
-
+#include "Valves.h"
 #include <string>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -13,5 +13,4 @@ private:
 
     static void handleBrowserClientMsg(int sockfd, const std::string &message);
     static void handleWebSrvClientMsg(int sockfd, const std::string &message);
-
 };

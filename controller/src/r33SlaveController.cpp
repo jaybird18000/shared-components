@@ -11,8 +11,10 @@
 #include "TaskUtilities.h"
 #include "ClientsList.h"
 #include "DeviceConfig.h"
+#include "statusDb.h"
 #include "arduinojson.h"
 #include "esp_log.h"
+#include "esp_random.h"
 
 static ACMonitor acMonitor;
 static GenRelay genRelay;
@@ -126,6 +128,7 @@ void R33SlaveController::measurementTaskLoop() {
             auto bytes = item.serialize();
             if(R33ClientController::instance().isClientConnected())
             {
+                // send this AC data to the master controller
                 R33ClientController::instance().clientSendBinary(bytes.data(), bytes.size());
             }
             else
@@ -186,27 +189,83 @@ std::string R33SlaveController::collectACData() {
     ACMonitor::ACResults currentResults = acMonitor.readCurrent();
     float voltage = voltageResults.rms_voltage;
     float current = currentResults.rms_current;
+    float freq = voltageResults.frequency;
+//    ESP_LOGI(TAG,"freq = %0.1f",freq);
+    float watts = 10.0f;
+    if(DebugControl::testMode())
+    {
+        switch(genRelay.state())
+        {
+            case GenRelay::STARTING:
+                testModeAcMonitorStartStopDelayCounter++;
+                generateGoodACData = false;
+                if(testModeAcMonitorStartStopDelayCounter >= 2)
+                {
+                    generateGoodACData = true;
+                }
+                break;
+            case GenRelay::RUNNING:
+                testModeAcMonitorStartStopDelayCounter = 0;
+                generateGoodACData = true;
+                break;
+            case GenRelay::STOPPING:
+                testModeAcMonitorStartStopDelayCounter++;
+                generateGoodACData = true;
+                if(testModeAcMonitorStartStopDelayCounter >= 2)
+                {
+                    generateGoodACData = false;
+                }
+                break;
+            case GenRelay::NOT_RUNNING:
+                testModeAcMonitorStartStopDelayCounter = 0;
+                generateGoodACData = false;
+                break;
+            default:
+                generateGoodACData = false;
+                break;
+        }
+        if(generateGoodACData)
+        {
+            int peak2peakNoise = 10;
+            int currentNoiseScaler = 30;
+            float nominalVoltage = 120.0f;
+            float nominalCurrent = 7.0f;
+            uint32_t r = esp_random() % (peak2peakNoise + 1);
+            // center the noise around zero, then add a small fractional component
+            float noise = float(r) - (float(peak2peakNoise) / 2.0) + (float(r) / float(peak2peakNoise));
+            //ESP_LOGI(TAG, "TestMode genState STARTING: r=%d noise=%0.2f ", r, noise);
+            voltage = nominalVoltage + noise;
 
+            current = nominalCurrent + (noise / currentNoiseScaler);            
+
+            freq = 60.0f;     // Example test frequency
+            watts = voltage * current; // Example test watts calculation
+//            ESP_LOGI(TAG, "TestMode genState STARTING Setting: AC Data: voltage=%0.2f current=%0.2f freq=%0.1f", voltage, current, freq);
+        }
+        else
+        {
+            voltage = 0.0f; // Example test voltage when stopped
+            current = 0.0f; // Example test current when stopped
+            freq = 0.0f;    // Example test frequency when stopped
+            watts = 0.0f;   // Example test watts calculation when stopped
+//            ESP_LOGI(TAG, "TestMode genState STOPPING/NOT_RUNNING Setting: AC Data: voltage=%0.2f current=%0.2f freq=%0.1f", voltage, current, freq);
+        }
+    }
     genRelay.setState(voltage);
 
 //    ESP_LOGI(TAG, "Collected voltage %0.2f  current %0.2f", voltage, current);
     std::string genStatus = genRelay.stateText();
-    // float voltage = 120.5f;
-    // float current = 5.2f;
-    float freq = voltageResults.frequency;
-//    ESP_LOGI(TAG,"freq = %0.1f",freq);
-    float watts = 10.0f;
-    // collectACData runs on the clinet(slave) side,
+
+    // collectACData runs on the client(slave) side,
     // storing the acData in the SharedDataStore 
     // allows the slave web browser page to show the latest AC data even if the master is not connected, 
     // by reading from the SharedDataStore. The SharedDataStore is updated with the latest AC data every time collectACData is called, 
     // which is every 2 seconds in the measurementTaskLoop. 
     // This way, the slave can display real-time AC data on its web page regardless of the master's connection status.
     SharedDataStore::set(voltage, current, freq, watts, genStatus.c_str());
-    // uint32_t r = esp_random() % 10;
-    // voltage = voltage + r - 5;
-    // r = esp_random() % 2;
-    // current = current +r - 1;
+    StatusDb::instance().setAcData(voltage, current, freq, watts, genRelay.state());
+    
+    // prepare a json message to send this updated info the master controller via WebSocket
     DynamicJsonDocument doc(256);
 
     doc["type"] = "ac_update";
@@ -217,7 +276,8 @@ std::string R33SlaveController::collectACData() {
     p["current"] = current;
     p["frequency"] = freq;
     p["watts"] = watts;
-    p["genStatus"] = genStatus;
+//    p["genStatus"] = genStatus;
+    p["genStatus"] = static_cast<int>(genRelay.state());
 
     std::string out;
     serializeJson(doc, out);

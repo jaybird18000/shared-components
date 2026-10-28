@@ -28,6 +28,8 @@ idf_component_register(
         "src/DebugCommands.cpp"
         "src/ConsoleApp.cpp"
         "src/ClientInfo.cpp"
+        "src/MdnsMgr.cpp"
+        "src/statusDb.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES

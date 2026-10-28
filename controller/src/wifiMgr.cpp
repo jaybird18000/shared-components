@@ -4,6 +4,7 @@
 #include "WsServer.h"
 #include "DeviceConfig.h"
 #include "DebugServices.h"
+#include "DebugControl.h"
 #include <esp_event.h>
 #include <esp_log.h>
 #include <esp_netif.h>
@@ -25,6 +26,38 @@ static bool mdnsInitialized = false;
 static bool isMaster_ = false;
 TaskHandle_t WifiMgr::wifiRetryTaskHandle = nullptr;
 //static NvsMgr& nvsMgr = NvsMgr::instance();
+
+std::string WifiMgr::currentIpAddress() const
+{
+    // Fall back to the AP interface's own IP when STA isn't connected (AP fallback mode)
+    esp_netif_t* netif = (sta_connected_ && sta_netif != nullptr) ? sta_netif : ap_netif;
+    if (netif == nullptr) {
+        return "";
+    }
+
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK || ip_info.ip.addr == 0) {
+        return "";
+    }
+
+    char ip_str[16] = {};
+    esp_ip4addr_ntoa(&ip_info.ip, ip_str, sizeof(ip_str));
+    return ip_str;
+}
+
+int WifiMgr::currentWifiRssi() const
+{
+    if (!sta_connected_) {
+        return 0;
+    }
+
+    wifi_ap_record_t ap_info = {};
+    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+        return 0;
+    }
+
+    return ap_info.rssi;
+}
 
 WifiMgr::WifiMgr()
     : sta_connected_(false), ap_connected_(false), wifiMode_(WifiModes::OFF)
@@ -64,7 +97,8 @@ bool WifiMgr::isAPConnected() const
 
 bool WifiMgr::isApMode() const
 {
-    if(wifiMode_ == WifiModes::AP) {
+    if(wifiMode_ == WifiModes::AP ||
+       (wifiMode_ == WifiModes::STA_AP && !sta_connected_)) {
         return true;
     }
     return false;
@@ -86,10 +120,10 @@ std::string WifiMgr::statusText() const
 
 std::string WifiMgr::currentWifiSSID() const
 {
-    if (sta_connected_ || wifiMode_ == WifiModes::STA || wifiMode_ == WifiModes::STA_AP) {
+    if (sta_connected_ || wifiMode_ == WifiModes::STA) {
         return STA_config_.ssid;
     }
-    if (ap_connected_ || wifiMode_ == WifiModes::AP) {
+    if (ap_connected_ || wifiMode_ == WifiModes::AP || wifiMode_ == WifiModes::STA_AP) {
         return AP_config_.ssid;
     }
     return "";
@@ -255,7 +289,10 @@ void WifiMgr::wifi_retry_task(void* param)
 
         vTaskDelay(pdMS_TO_TICKS(delayMs));
 
-        ESP_LOGI("WIFI", "Retrying STA connection...");
+        if(DebugControl::enabled(DebugItem::WIFI))
+        {
+            ESP_LOGI("WIFI", "Retrying STA connection...");
+        }
         esp_wifi_connect();
 
         // Exponential backoff up to 30 seconds
@@ -391,8 +428,14 @@ void WifiMgr::wifi_event_handler(void *event_handler_arg, esp_event_base_t event
             instance->wifiMode_ = instance->determineMode(event_enum);
             mdnsStartedSta = false;
             wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
-            ESP_LOGI(TAG, "STA disconnected: reason=%d", event->reason);
-            debugServices::postDebug("STA disconnected: reason=" + std::to_string(event->reason));
+            // sta disconnected fires even when retrying sta and it fails, so only print
+            // when we have previously been connected to wifi
+            if(instance->wifiMode_ == WifiModes::STA) 
+            {
+                ESP_LOGI(TAG, "STA disconnected: reason=%d", event->reason);
+                debugServices::postDebug("STA disconnected: reason=" + std::to_string(event->reason));
+            }
+
             LedController::instance().off(1);
             LedController::instance().stopFlash();
             LedController::instance().flash(1,200,800);
@@ -410,7 +453,7 @@ void WifiMgr::wifi_event_handler(void *event_handler_arg, esp_event_base_t event
         }
         case WIFI_EVENT_AP_STACONNECTED: {
             wifi_event_ap_staconnected_t *event = (wifi_event_ap_staconnected_t *)event_data;
-            ESP_LOGI(TAG, "Station connected: MAC=%02x:%02x:%02x:%02x:%02x:%02x, AID=%d",
+            ESP_LOGI(TAG, "AP Station connected: MAC=%02x:%02x:%02x:%02x:%02x:%02x, AID=%d",
                      event->mac[0], event->mac[1], event->mac[2], event->mac[3], event->mac[4], event->mac[5], event->aid);
             instance->wifiMode_ = instance->determineMode(event_enum);
             instance->ap_connected_ = true;
@@ -419,7 +462,7 @@ void WifiMgr::wifi_event_handler(void *event_handler_arg, esp_event_base_t event
         }
         case WIFI_EVENT_AP_STADISCONNECTED: {
             wifi_event_ap_stadisconnected_t *event = (wifi_event_ap_stadisconnected_t *)event_data;
-            ESP_LOGI(TAG, "Station disconnected: MAC=%02x:%02x:%02x:%02x:%02x:%02x, AID=%d",
+            ESP_LOGI(TAG, "AP Station disconnected: MAC=%02x:%02x:%02x:%02x:%02x:%02x, AID=%d",
                      event->mac[0], event->mac[1], event->mac[2], event->mac[3], event->mac[4], event->mac[5], event->aid);
             instance->wifiMode_ = instance->determineMode(event_enum);
             instance->ap_connected_ = false;
